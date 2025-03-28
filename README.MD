@@ -114,7 +114,9 @@ This project is licensed under the GNU General Public License v3.0 (GPL-3.0) - s
 
 ## Security
 
-Security is the single highest priority for us. That's why [Gumloop is SOC 2 Type II, GDPR, and HIPAA compliant](https://trust.gumloop.com/), and why for this OSS repo, we're actively rewarding those who responsibly disclose serious vulnerabilities and exploits to security@gumloop.com.
+Security is the single highest priority for us.
+
+That's why [Gumloop is SOC 2 Type II, GDPR, and HIPAA compliant](https://trust.gumloop.com/), and why for this OSS repo, we're actively rewarding those who responsibly disclose serious vulnerabilities and exploits to security@gumloop.com.
 
 ## Community
 
