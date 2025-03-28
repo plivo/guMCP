@@ -1,6 +1,6 @@
 name: "Google Calendar guMCP Server"
 icon: "assets/icon.png"
-description: "Server for interacting with Google Calendar events and schedules"
+description: "Interact with Google Calendar events and schedules"
 documentation_path: "README.md"
 tools:
   - name: "list_events"

@@ -1,6 +1,6 @@
 name: "Attio guMCP Server"
 icon: "assets/icon.png"
-description: "Server for interacting with Attio CRM data and records"
+description: "Interact with Attio CRM data and records"
 documentation_path: "README.md"
 tools:
   - name: "search_companies"

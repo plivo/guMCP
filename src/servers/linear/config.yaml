@@ -1,6 +1,6 @@
 name: "Linear guMCP Server"
 icon: "assets/icon.png"
-description: "Server for interacting with Linear issue tracking and project management"
+description: "Interact with Linear issue tracking and project management"
 documentation_path: "README.md"
 tools:
   - name: "search_issues"

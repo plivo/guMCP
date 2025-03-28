@@ -1,6 +1,6 @@
 name: "Google Sheets guMCP Server"
 icon: "assets/icon.png"
-description: "Server for interacting with Google Sheets"
+description: "Read, write and update your Google Sheets"
 documentation_path: "README.md"
 tools:
   - name: "get_spreadsheet_info"

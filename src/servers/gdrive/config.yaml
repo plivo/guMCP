@@ -1,6 +1,6 @@
 name: "Google Drive guMCP Server"
 icon: "assets/icon.png"
-description: "Server for searching and accessing files in Google Drive"
+description: "Search and access files in Google Drive"
 documentation_path: "README.md"
 tools:
   - name: "search"
