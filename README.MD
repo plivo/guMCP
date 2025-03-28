@@ -1,4 +1,4 @@
-# guMCP (Gumloop Unified Model Context Protocol)
+# Gumloop Unified Model Context Protocol (guMCP)
 
 guMCP is an open-source collection of Model Context Protocol (MCP) servers that can be run both remotely and locally. The project aims to create the largest collection of MCP servers with a unified backend, fostering a community around AI integrations and the future of AGI.
 
