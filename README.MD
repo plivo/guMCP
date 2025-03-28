@@ -71,32 +71,34 @@ cp .env.example .env  # Then edit with your configuration
 ### Running Servers Locally (stdio)
 
 ```bash
-python tests/servers/test_runner.py --server=simple-tools-server
+python src/servers/local.py --server=simple-tools-server
+```
+
+For convenience, we also provide a lightweight MCP Client to start and connect to stdio servers. Usage:
+
+```bash
+ python tests/clients/LocalMCPTestClient.py --server=simple-tools-server
 ```
 
 ### Running Servers Remotely (SSE)
 
-1. Start the remote development server:
+An SSE server can be run locally. This will provide a single URL and host every server available.
+
+To start the SSE development server, run:
 
 ```bash
 ./start_remote_dev_server.sh
 ```
 
-2. Run tests:
+For convenience, we also prove a lightweight MCP Client to connect to SSE servers. Usage:
 
 ```bash
-python tests/servers/test_runner.py --server=simple-tools-server --remote
-```
-
-### Testing with Hosted Servers
-
-```bash
-python tests/servers/test_runner.py --server=simple-tools-server --remote --endpoint=https://mcp.gumloop.com/gdrive/{user_id}%3A{api_key}
+python tests/clients/RemoteMCPTestClient.py --endpoint=http://localhost:8000/simple-tools-server/local
 ```
 
 ## Contributing
 
-We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.MD) for guidelines.
 
 Key areas for contribution:
 
