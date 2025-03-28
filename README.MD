@@ -68,7 +68,9 @@ cp .env.example .env  # Then edit with your configuration
 
 ## Usage
 
-### Running Servers Locally (stdio)
+### Running Servers
+
+#### Stdio
 
 ```bash
 python src/servers/local.py --server=simple-tools-server
@@ -80,7 +82,7 @@ For convenience, we also provide a lightweight MCP Client to start and connect t
  python tests/clients/LocalMCPTestClient.py --server=simple-tools-server
 ```
 
-### Running Servers Remotely (SSE)
+#### SSE
 
 An SSE server can be run locally. This will provide a single URL and host every server available.
 
