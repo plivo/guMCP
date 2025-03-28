@@ -106,7 +106,7 @@ Key areas for contribution:
 
 ## License
 
-[License details to be added]
+This project is licensed under the GNU General Public License v3.0 (GPL-3.0) - see the [LICENSE](LICENSE) file for details.
 
 ## Security
 
