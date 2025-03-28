@@ -1,0 +1,11 @@
+name: "Airtable guMCP Server"
+icon: "assets/icon.png"
+description: "Server for interacting with Airtable bases and records"
+documentation_path: "README.md"
+tools:
+  - name: "read_records"
+    description: "Read records from an Airtable table"
+  - name: "create_records"
+    description: "Create new records in an Airtable table"
+  - name: "update_records"
+    description: "Update existing records in an Airtable table"
