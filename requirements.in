@@ -10,6 +10,5 @@ slack-sdk
 python-dotenv
 starlette
 uvicorn
-mcp
 requests
 google
