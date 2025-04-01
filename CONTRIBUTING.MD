@@ -199,6 +199,13 @@ When adding new features, please ensure you:
 5. **Update documentation** as needed
 6. **Submit a pull request** with a clear description of the changes and why they're needed
 
+## Request for PRs
+
+- Add Support for New MCP Spec
+  - [Streamable HTTP Transport](https://github.com/gumloop/guMCP/issues/26)
+  - Client/Server Authentication Mechanism
+- [Add Support for FastMCP](https://github.com/gumloop/guMCP/issues/24)
+
 ## Versioning
 
 We follow [Semantic Versioning](https://semver.org/) for this project.
