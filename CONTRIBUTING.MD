@@ -87,10 +87,73 @@ You can run the code quality tools with the following command from the root dire
 ```bash
 # Format code with Black
 python scripts/format_code.py
-
-# Run linters
-python scripts/lint.py
 ```
+
+## Authentication
+
+### OAuth 2.0
+
+For local development and usage with OAuth-based integrations, we use the `LocalAuthClient` to manage credentials:
+
+1. **Create OAuth Configuration**
+
+   Create a JSON configuration file for your service in `local_auth/oauth_configs/<service_name>/oauth.json`:
+
+   ```json
+   {
+     "client_id": "your_client_id",
+     "client_secret": "your_client_secret",
+     "redirect_uri": "http://localhost:8080" // This is the default recommended redirect_uri as it is the default used in `src/utils/oauth/util.py`, which should be used for retrieving the authorization code
+   }
+   ```
+
+2. **Authenticate Users**
+
+   Use the authentication flow in your server's main module:
+
+   ```python
+   # Run authentication flow
+   authenticate_and_save_credentials("local", "service_name", ["scope1", "scope2"])
+   ```
+
+   The recommmendation here is to create a util function (in `src/utils/{service_name}/util.py`) to `get_credentials` which wraps `run_oauth_flow()` from [OAuth Utils](src/utils/oauth/util.py)
+
+3. **Access Credentials**
+
+   The `LocalAuthClient` stores credentials in `local_auth/credentials/<service_name>/<user_id>_credentials.json`.
+
+   You can retrieve them in your code:
+
+   ```python
+   from src.auth.factory import create_auth_client
+
+   auth_client = create_auth_client()
+   credentials = auth_client.get_user_credentials("service_name", "user_id")
+   ```
+
+   The recommendation here is to create a util function (in `src/utils/{service_name}/util.py`) to `get_credentials` which wraps `refresh_token_if_needed()` to automatically handles the refresh from [OAuth Utils](src/utils/oauth/util.py)
+
+4. **Example Implementations**
+
+   For reference, check out these example implementations:
+
+   - [Slack](src/utils/slack/util.py) - Uses OAuth 2.0 without refresh tokens
+   - [Attio](src/utils/attio/util.py) - Uses OAuth 2.0 with refresh token support, stores some additional params from token response as well
+   - [Airtable](src/utils/airtable/util.py) - Uses OAuth 2.0 with refresh token support, uses challenge code as well
+
+   These examples demonstrate how to properly implement the authentication flow, token handling, and credential management for different OAuth 2.0 patterns.
+
+   **HIGHLY RECOMMENDED**: Review these examples before implementing your own OAuth integration, as they provide clear patterns for both simple OAuth flows (Slack) and more complex flows with refresh tokens (Airtable).
+
+### Non-OAuth
+
+For non-oauth flows like those requiring API keys or similar, the approach can be much more straight forward, working with the `auth_client` directly.
+
+See [Perplexity](src/servers/perplexity/main.py) for a clear example
+
+### Remote Auth Clients
+
+If implementing your own AuthClient to host and run guMCP servers remotely, please note that the assumption made in [BaseAuthClient](src/auth/clients/BaseAuthClient.py) is that `get_user_credentials()` returns a _refreshed and ready-to-use_ version of the credential. That is, refreshing should be taken care of on the side of the `AuthClient`.
 
 ## Testing
 
@@ -125,6 +188,7 @@ When adding new features, please ensure you:
 4. Use descriptive test names that follow the pattern `test_<functionality>_<expected_behavior>`
 
 - All servers should have a corresponding `tests.py` file testing all tools, resources, prompts, etc.
+- Please have some tests that do NOT use mocks and expect the user to already be authenticated locally. This helps us ensure that functionality is actually correct and working end-to-end.
 
 ## Pull Request Process
 
