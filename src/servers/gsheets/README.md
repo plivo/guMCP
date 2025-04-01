@@ -55,7 +55,7 @@ This server exposes the following tools for interacting with Google Sheets:
 You can launch the server for local development using:
 
 ```bash
-./start_remote_dev_server.sh
+./start_sse_dev_server.sh
 ```
 
 This will start the MCP server and make it available for integration and testing.

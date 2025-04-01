@@ -164,7 +164,7 @@ Tests can be run from the root directory using:
 ```bash
 # Run specific tests locally (stdio)
 python tests/servers/test_runner.py --server=simple-tools-server
-# Run specific tests locally (sse) -- you would need to have the sse server running, ex. by running ./start_remote_dev_server.sh from the root directory
+# Run specific tests locally (sse) -- you would need to have the sse server running, ex. by running ./start_sse_dev_server.sh from the root directory
 python tests/servers/test_runner.py --server=simple-tools-server --remote
 # Run tests on a specific hosted guMCP server (ex. Gumloop's MCP Server)
 python tests/servers/test_runner.py --server=simple-tools-server --remote --endpoint=https://mcp.gumloop.com/gdrive/{user_id}%3A{api_key}

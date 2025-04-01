@@ -87,7 +87,7 @@ An SSE server can be run locally. This will provide a single URL and host every 
 To start the SSE development server, run:
 
 ```bash
-./start_remote_dev_server.sh
+./start_sse_dev_server.sh
 ```
 
 For convenience, we also provide a lightweight MCP Client to connect to SSE servers. Usage:
