@@ -11,74 +11,82 @@ While many MCP server providers are closed source, and open-source alternatives 
 - A unified backend architecture for consistent implementation
 - Full open-source access to encourage community contributions
 
-## Features
-
-- **Dual Transport Support**: All servers support both:
-
-  - Local hosting through stdio
-  - Remote hosting through SSE
-
-- **Unified Backend**: Consistent implementation patterns across all servers
-
-- **Extensive Server Collection**: Including servers for:
-  - File systems and databases
-  - Development tools
-  - Web and browser automation
-  - Productivity and communication
-  - AI and specialized tools
-
 ## Getting Started
 
-[![Watch the video](https://www.gumloop.com/_next/image?url=%2Fimages%2Fmcp%2FGuideVideo.png&w=1920&q=75)](https://vimeo.com/1070438737/8dea56e6a1)
+> **🎬 RECOMMENDED: Watch our quick setup video before getting started!** 
+> 
+> This under 5-minute walkthrough will save you time and help you understand the key concepts.
+> 
+> [![Watch the guMCP Getting Started Video](https://www.gumloop.com/_next/image?url=%2Fimages%2Fmcp%2FGuideVideo.png&w=1920&q=75)](https://vimeo.com/1070438737/8dea56e6a1)
 
 ### Prerequisites
 
 - Python 3.11
 - Git
+- For Windows users: A bash-compatible shell is recommended (Git Bash, WSL, etc.)
 
 ### Installation
 
-1. Clone the repository:
+1. **Clone the repository**:
 
-```bash
-git clone https://github.com/gumloop/guMCP.git
-cd guMCP
-```
+   ```bash
+   git clone https://github.com/gumloop/guMCP.git
+   cd guMCP
+   ```
 
-2. Create and activate virtual environment:
+2. **Set up a virtual environment**:
 
-```bash
-python -m venv venv
-source venv/bin/activate  # On Unix/macOS
-venv\Scripts\activate     # On Windows
-```
+   This isolates the project dependencies from your system Python installation.
 
-3. Install dependencies:
+   ```bash
+   # Create the virtual environment
+   python -m venv venv
+   
+   # Activate it (choose the appropriate command for your OS)
+   # On Unix/macOS:
+   source venv/bin/activate
+   
+   # On Windows (Command Prompt):
+   venv\Scripts\activate
+   
+   # On Windows (PowerShell):
+   .\venv\Scripts\Activate.ps1
+   
+   # On Windows (Git Bash):
+   source venv/Scripts/activate
+   ```
+   
+   You'll know your virtual environment is active when you see `(venv)` at the beginning of your command prompt.
 
-```bash
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-```
+3. **Install dependencies**:
 
-4. Set up environment variables:
+   ```bash
+   # Install core dependencies
+   pip install -r requirements.txt
+   
+   # Install development dependencies (for contributing)
+   pip install -r requirements-dev.txt
+   ```
 
-```bash
-cp .env.example .env  # Then edit with your configuration
-```
+4. **Configure environment variables**:
+
+   ```bash
+   # Create a local environment file from the template
+   cp .env.example .env
+   
+   # Open the .env file in your preferred text editor and update values as needed
+   # If you're using VS Code:
+   code .env
+   ```
+   
+   The `.env` file contains configuration for:
+   - API keys for service integrations
+   - Authentication settings
+   - Server configuration options
+   - Development environment settings
+
 
 ## Usage
-
-### Running Stdio Servers
-
-```bash
-python src/servers/local.py --server=simple-tools-server
-```
-
-For convenience, we also provide a lightweight MCP Client to start and connect to stdio servers. Usage:
-
-```bash
- python tests/clients/LocalMCPTestClient.py --server=simple-tools-server
-```
 
 ### Running SSE Servers
 
@@ -95,6 +103,41 @@ For convenience, we also provide a lightweight MCP Client to connect to SSE serv
 ```bash
 python tests/clients/RemoteMCPTestClient.py --endpoint=http://localhost:8000/simple-tools-server/local
 ```
+
+### Running Stdio Servers
+
+```bash
+python src/servers/local.py --server=simple-tools-server
+```
+
+For convenience, we also provide a lightweight MCP Client to start and connect to stdio servers. Usage:
+
+```bash
+ python tests/clients/LocalMCPTestClient.py --server=simple-tools-server
+```
+
+## Supported Servers and Authentication Methods
+
+The following table provides an overview of the current servers implemented in guMCP, their authentication requirements, and relative ease of use with different authentication methods:
+
+| Server | Auth Type | Remote Auth<br>(e.g., Cursor) | Local Auth<br>(e.g., Claude Desktop) | Documentation |
+|--------|-----------|-------------------------------|--------------------------------------|---------------|
+| **Google Services** | | | | |
+| Google Sheets | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gsheets) | ⚠️ Requires GCP project & OAuth setup | [GSheets Docs](/src/servers/gsheets/README.md) |
+| Gmail | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gmail) | ⚠️ Requires GCP project & OAuth setup | [Gmail Docs](/src/servers/gmail/README.md) |
+| Google Docs | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gdocs) | ⚠️ Requires GCP project & OAuth setup | [GDocs Docs](/src/servers/gdocs/README.md) |
+| Google Drive | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gdrive) | ⚠️ Requires GCP project & OAuth setup | [GDrive Docs](/src/servers/gdrive/README.md) |
+| Google Calendar | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gcalendar) | ⚠️ Requires GCP project & OAuth setup | [GCalendar Docs](/src/servers/gcalendar/README.md) |
+| **Communication Tools** | | | | |
+| Slack | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/slack) | ⚠️ Requires OAuth setup with HTTPS redirect | [Slack Docs](/src/servers/slack/README.md) |
+| Outlook | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/outlook) | ⚠️ Requires Azure app registration | [Outlook Docs](/src/servers/outlook/README.md) |
+| **Productivity Tools** | | | | |
+| Airtable | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/airtable) | ⚠️ Requires Airtable OAuth application | [Airtable Docs](/src/servers/airtable/README.md) |
+| Linear | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/linear) | ⚠️ Requires Linear OAuth application | [Linear Docs](/src/servers/linear/README.md) |
+| Attio | Mixed | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/attio) | ⚠️ Requires Attio OAuth application | [Attio Docs](/src/servers/attio/README.md) |
+| **Search Tools** | | | | |
+| Perplexity | API Key | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/perplexity) | ✅ Easy - Simple API key setup | [Perplexity Docs](/src/servers/perplexity/README.md) |
+
 
 ## Contributing
 
