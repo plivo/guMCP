@@ -13,10 +13,10 @@ While many MCP server providers are closed source, and open-source alternatives 
 
 ## Getting Started
 
-> **🎬 RECOMMENDED: Watch our quick setup video before getting started!** 
-> 
+> **🎬 RECOMMENDED: Watch our quick setup video before getting started!**
+>
 > This under 5-minute walkthrough will save you time and help you understand the key concepts.
-> 
+>
 > [![Watch the guMCP Getting Started Video](https://www.gumloop.com/_next/image?url=%2Fimages%2Fmcp%2FGuideVideo.png&w=1920&q=75)](https://vimeo.com/1070438737/8dea56e6a1)
 
 ### Prerequisites
@@ -41,21 +41,21 @@ While many MCP server providers are closed source, and open-source alternatives 
    ```bash
    # Create the virtual environment
    python -m venv venv
-   
+
    # Activate it (choose the appropriate command for your OS)
    # On Unix/macOS:
    source venv/bin/activate
-   
+
    # On Windows (Command Prompt):
    venv\Scripts\activate
-   
+
    # On Windows (PowerShell):
    .\venv\Scripts\Activate.ps1
-   
+
    # On Windows (Git Bash):
    source venv/Scripts/activate
    ```
-   
+
    You'll know your virtual environment is active when you see `(venv)` at the beginning of your command prompt.
 
 3. **Install dependencies**:
@@ -63,7 +63,7 @@ While many MCP server providers are closed source, and open-source alternatives 
    ```bash
    # Install core dependencies
    pip install -r requirements.txt
-   
+
    # Install development dependencies (for contributing)
    pip install -r requirements-dev.txt
    ```
@@ -73,18 +73,18 @@ While many MCP server providers are closed source, and open-source alternatives 
    ```bash
    # Create a local environment file from the template
    cp .env.example .env
-   
+
    # Open the .env file in your preferred text editor and update values as needed
    # If you're using VS Code:
    code .env
    ```
-   
+
    The `.env` file contains configuration for:
+
    - API keys for service integrations
    - Authentication settings
    - Server configuration options
    - Development environment settings
-
 
 ## Usage
 
@@ -120,24 +120,32 @@ For convenience, we also provide a lightweight MCP Client to start and connect t
 
 The following table provides an overview of the current servers implemented in guMCP, their authentication requirements, and relative ease of use with different authentication methods:
 
-| Server | Auth Type | Remote Auth<br>(e.g., Cursor) | Local Auth<br>(e.g., Claude Desktop) | Documentation |
-|--------|-----------|-------------------------------|--------------------------------------|---------------|
-| **Google Services** | | | | |
-| Google Sheets | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gsheets) | ⚠️ Requires GCP project & OAuth setup | [GSheets Docs](/src/servers/gsheets/README.md) |
-| Gmail | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gmail) | ⚠️ Requires GCP project & OAuth setup | [Gmail Docs](/src/servers/gmail/README.md) |
-| Google Docs | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gdocs) | ⚠️ Requires GCP project & OAuth setup | [GDocs Docs](/src/servers/gdocs/README.md) |
-| Google Drive | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gdrive) | ⚠️ Requires GCP project & OAuth setup | [GDrive Docs](/src/servers/gdrive/README.md) |
-| Google Calendar | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gcalendar) | ⚠️ Requires GCP project & OAuth setup | [GCalendar Docs](/src/servers/gcalendar/README.md) |
-| **Communication Tools** | | | | |
-| Slack | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/slack) | ⚠️ Requires OAuth setup with HTTPS redirect | [Slack Docs](/src/servers/slack/README.md) |
-| Outlook | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/outlook) | ⚠️ Requires Azure app registration | [Outlook Docs](/src/servers/outlook/README.md) |
-| **Productivity Tools** | | | | |
-| Airtable | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/airtable) | ⚠️ Requires Airtable OAuth application | [Airtable Docs](/src/servers/airtable/README.md) |
-| Linear | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/linear) | ⚠️ Requires Linear OAuth application | [Linear Docs](/src/servers/linear/README.md) |
-| Attio | Mixed | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/attio) | ⚠️ Requires Attio OAuth application | [Attio Docs](/src/servers/attio/README.md) |
-| **Search Tools** | | | | |
-| Perplexity | API Key | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/perplexity) | ✅ Easy - Simple API key setup | [Perplexity Docs](/src/servers/perplexity/README.md) |
-
+| Server                  | Auth Type | Remote Auth<br>(e.g., Cursor)                                           | Local Auth<br>(e.g., Claude Desktop)        | Documentation                                                   |
+| ----------------------- | --------- | ----------------------------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------------- |
+| **Google Services**     |           |                                                                         |                                             |                                                                 |
+| Google Sheets           | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gsheets)    | ⚠️ Requires GCP project & OAuth setup       | [GSheets Docs](/src/servers/gsheets/README.md)                  |
+| Gmail                   | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gmail)      | ⚠️ Requires GCP project & OAuth setup       | [Gmail Docs](/src/servers/gmail/README.md)                      |
+| Google Docs             | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gdocs)      | ⚠️ Requires GCP project & OAuth setup       | [GDocs Docs](/src/servers/gdocs/README.md)                      |
+| Google Drive            | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gdrive)     | ⚠️ Requires GCP project & OAuth setup       | [GDrive Docs](/src/servers/gdrive/README.md)                    |
+| Google Calendar         | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/gcalendar)  | ⚠️ Requires GCP project & OAuth setup       | [GCalendar Docs](/src/servers/gcalendar/README.md)              |
+| YouTube                 | OAuth 2.0 | ⚠️ Coming soon                                                          | ⚠️ Requires GCP project & OAuth setup       | [YouTube Docs](/src/servers/youtube/README.md)                  |
+| **Communication Tools** |           |                                                                         |                                             |                                                                 |
+| Slack                   | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/slack)      | ⚠️ Requires OAuth setup with HTTPS redirect | [Slack Docs](/src/servers/slack/README.md)                      |
+| Outlook                 | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/outlook)    | ⚠️ Requires Azure app registration          | [Outlook Docs](/src/servers/outlook/README.md)                  |
+| X (Twitter)             | OAuth 2.0 | ⚠️ Coming soon                                                          | ⚠️ Requires X Developer Account             | [X Docs](/src/servers/x/README.md)                              |
+| **Productivity Tools**  |           |                                                                         |                                             |                                                                 |
+| Airtable                | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/airtable)   | ⚠️ Requires Airtable OAuth application      | [Airtable Docs](/src/servers/airtable/README.md)                |
+| Linear                  | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/linear)     | ⚠️ Requires Linear OAuth application        | [Linear Docs](/src/servers/linear/README.md)                    |
+| Attio                   | Mixed     | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/attio)      | ⚠️ Requires Attio OAuth application         | [Attio Docs](/src/servers/attio/README.md)                      |
+| Notion                  | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/notion)     | ⚠️ Requires Notion OAuth application        | [Notion Docs](/src/servers/notion/README.md)                    |
+| **Business Tools**      |           |                                                                         |                                             |                                                                 |
+| HubSpot                 | OAuth 2.0 | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/hubspot)    | ⚠️ Requires HubSpot OAuth application       | [HubSpot Docs](/src/servers/hubspot/README.md)                  |
+| QuickBooks              | OAuth 2.0 | ⚠️ Coming soon                                                          | ⚠️ Requires Intuit OAuth application        | [QuickBooks Docs](/src/servers/quickbooks/README.md)            |
+| Typeform                | API Key   | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/typeform)   | ✅ Easy - Simple API key setup              | [Typeform Docs](/src/servers/typeform/README.md)                |
+| **Search Tools**        |           |                                                                         |                                             |                                                                 |
+| Perplexity              | API Key   | [✅ Seamless with Gumloop auth](https://www.gumloop.com/mcp/perplexity) | ✅ Easy - Simple API key setup              | [Perplexity Docs](/src/servers/perplexity/README.md)            |
+| **Development Tools**   |           |                                                                         |                                             |                                                                 |
+| Simple Tools Server     | None      | ✅ No auth required                                                     | ✅ No auth required                         | [Simple Tools Docs](/src/servers/simple-tools-server/README.md) |
 
 ## Contributing
 
