@@ -3,10 +3,12 @@ import uvicorn
 import argparse
 import importlib.util
 from pathlib import Path
+import threading
 
 from starlette.routing import Route
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse, Response
+from prometheus_client import Counter, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 from mcp.server.sse import SseServerTransport
 
@@ -22,6 +24,17 @@ servers = {}
 # Store user-specific SSE transports and server instances
 user_session_transports = {}
 user_server_instances = {}
+
+# Prometheus metrics
+active_connections = Gauge(
+    "gumcp_active_connections", "Number of active SSE connections", ["server"]
+)
+connection_total = Counter(
+    "gumcp_connection_total", "Total number of SSE connections", ["server"]
+)
+
+# Default metrics port
+METRICS_PORT = 9091
 
 
 def discover_servers():
@@ -67,6 +80,23 @@ def discover_servers():
                     logger.error(f"Failed to load server {server_name}: {e}")
 
     logger.info(f"Discovered {len(servers)} servers")
+
+
+def create_metrics_app():
+    """Create a separate Starlette app just for metrics"""
+
+    async def metrics_endpoint(request):
+        """Prometheus metrics endpoint"""
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    routes = [Route("/metrics", endpoint=metrics_endpoint)]
+
+    app = Starlette(
+        debug=True,
+        routes=routes,
+    )
+
+    return app
 
 
 def create_starlette_app():
@@ -121,6 +151,10 @@ def create_starlette_app():
                 init_options = get_init_options(server_instance)
 
                 try:
+                    # Increment metrics
+                    active_connections.labels(server=server_name).inc()
+                    connection_total.labels(server=server_name).inc()
+
                     async with sse_transport.connect_sse(
                         request.scope, request.receive, request._send
                     ) as streams:
@@ -136,6 +170,8 @@ def create_starlette_app():
                     # Clean up the transport when the connection closes
                     if session_key in user_session_transports:
                         del user_session_transports[session_key]
+                        # Decrement active connections metric
+                        active_connections.labels(server=server_name).dec()
                         logger.info(
                             f"Closed SSE connection for {server_name} session: {user_id}"
                         )
@@ -209,6 +245,13 @@ def create_starlette_app():
     return app
 
 
+def run_metrics_server(host, port):
+    """Run a separate metrics server on the specified port"""
+    metrics_app = create_metrics_app()
+    logger.info(f"Starting metrics server on {host}:{port}")
+    uvicorn.run(metrics_app, host=host, port=port)
+
+
 def main():
     """Main entry point for the Starlette server"""
     parser = argparse.ArgumentParser(description="guMCP Server")
@@ -219,7 +262,13 @@ def main():
 
     args = parser.parse_args()
 
-    # Run the Starlette server
+    metrics_thread = threading.Thread(
+        target=run_metrics_server, args=(args.host, METRICS_PORT), daemon=True
+    )
+    metrics_thread.start()
+    logger.info(f"Starting Metrics server on http://{args.host}:{METRICS_PORT}/metrics")
+
+    # Run the main Starlette server
     app = create_starlette_app()
     logger.info(f"Starting Starlette server on {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
