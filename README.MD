@@ -86,6 +86,8 @@ While many MCP server providers are closed source, and open-source alternatives 
    - Server configuration options
    - Development environment settings
 
+Note: For local usage, by default, the `local_auth` folder should be located in the root of the repository
+
 ## Usage
 
 ### Running SSE Servers
