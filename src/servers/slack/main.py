@@ -179,9 +179,8 @@ def create_server(user_id, api_key=None):
                 channel_name = channel.get("name")
                 is_private = channel.get("is_private", False)
 
-                prefix = "private" if is_private else "channel"
                 resource = Resource(
-                    uri=f"slack://{prefix}/{channel_id}",
+                    uri=f"slack://channel/{channel_id}",
                     mimeType="text/plain",
                     name=f"#{channel_name}",
                     description=f"{'Private' if is_private else 'Public'} Slack channel: #{channel_name}",
@@ -210,7 +209,7 @@ def create_server(user_id, api_key=None):
         if len(parts) != 2:
             raise ValueError(f"Invalid Slack URI format: {uri_str}")
 
-        channel_type, channel_id = parts
+        _, channel_id = parts
 
         try:
             # Get channel history
