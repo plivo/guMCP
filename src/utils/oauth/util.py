@@ -190,11 +190,14 @@ def run_oauth_flow(
     # Process the token response if needed
     if process_token_response:
         token_response = process_token_response(token_response)
-    else:
-        # Default processing - add expiry time
-        token_response["expires_at"] = int(time.time()) + token_response.get(
-            "expires_in", 3600
-        )
+
+    # Update to include "expires_at" key if it doesn't exist
+    if isinstance(token_response, dict):
+        if "expires_in" in token_response and not "expires_at" in token_response:
+            # Default processing - add expiry time
+            token_response["expires_at"] = int(time.time()) + token_response.get(
+                "expires_in", 3600
+            )
 
     # Add any additional parameters from the callback
     if hasattr(server, "additional_params"):
