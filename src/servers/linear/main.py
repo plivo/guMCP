@@ -77,9 +77,9 @@ def create_server(user_id, api_key=None):
     async def handle_list_resources(
         cursor: Optional[str] = None,
     ) -> list[Resource]:
-        """List issues from Linear"""
+        """List teams from Linear"""
         logger.info(
-            f"Listing issue resources for user: {server.user_id} with cursor: {cursor}"
+            f"Listing team resources for user: {server.user_id} with cursor: {cursor}"
         )
 
         access_token = await get_linear_client()
@@ -113,60 +113,11 @@ def create_server(user_id, api_key=None):
             for team in teams:
                 resources.append(
                     Resource(
-                        uri=f"linear:///team/{team['id']}",
+                        uri=f"linear://team/{team['id']}",
                         mimeType="application/json",
                         name=f"Team: {team['name']} ({team['key']})",
                     )
                 )
-
-                # Query to get issues for each team
-                issues_query = """
-                query($teamId: ID!, $after: String) {
-                    issues(
-                        filter: { team: { id: { eq: $teamId } } }
-                        first: 10
-                        after: $after
-                    ) {
-                        nodes {
-                            id
-                            title
-                            identifier
-                            state {
-                                name
-                            }
-                            project {
-                                name
-                            }
-                            url
-                        }
-                        pageInfo {
-                            hasNextPage
-                            endCursor
-                        }
-                    }
-                }
-                """
-
-                variables = {"teamId": team["id"]}
-                if cursor:
-                    variables["after"] = cursor
-
-                issues_result = await execute_linear_query(
-                    issues_query, variables, access_token=access_token
-                )
-                issues = (
-                    issues_result.get("data", {}).get("issues", {}).get("nodes", [])
-                )
-
-                # Add issues as resources
-                for issue in issues:
-                    resources.append(
-                        Resource(
-                            uri=f"linear:///issue/{issue['id']}",
-                            mimeType="application/json",
-                            name=f"Issue: {issue['title']} ({issue['state']['name']})",
-                        )
-                    )
 
             return resources
 
@@ -186,9 +137,9 @@ def create_server(user_id, api_key=None):
 
         uri_str = str(uri)
 
-        if uri_str.startswith("linear:///team/"):
+        if uri_str.startswith("linear://team/"):
             # Handle team resource
-            team_id = uri_str.replace("linear:///team/", "")
+            team_id = uri_str.replace("linear://team/", "")
 
             team_query = """
             query($teamId: String!) {
@@ -231,9 +182,9 @@ def create_server(user_id, api_key=None):
                 )
             ]
 
-        elif uri_str.startswith("linear:///issue/"):
+        elif uri_str.startswith("linear://issue/"):
             # Handle issue resource
-            issue_id = uri_str.replace("linear:///issue/", "")
+            issue_id = uri_str.replace("linear://issue/", "")
 
             issue_query = """
             query($issueId: String!) {
