@@ -273,7 +273,8 @@ def create_server(user_id, api_key=None):
                     "items": {"type": "string"},
                     "description": "Array of JSON strings containing data of messages with user and message details",
                     "examples": [
-                        '[{"user":"U12345","type":"message","ts":"1234567890.123456","text":"This is a test message","team":"T12345","user_name":"test_user","user_profile":{"real_name":"Test User","display_name":"Test User"}}, {"user":"U67890","type":"message","ts":"1234567891.123456","text":"Hello there","team":"T12345","user_name":"another_user","user_profile":{"real_name":"Another User","display_name":"Another User"}}]'
+                        '{"user":"U12345","type":"message","ts":"1234567890.123456","text":"This is a test message","team":"T12345","user_name":"test_user","user_profile":{"real_name":"Test User","display_name":"Test User"}}',
+                        '{"user":"U67890","type":"message","ts":"1234567891.123456","text":"Hello there","team":"T12345","user_name":"another_user","user_profile":{"real_name":"Another User","display_name":"Another User"}}',
                     ],
                 },
             ),
