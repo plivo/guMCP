@@ -410,8 +410,6 @@ query getRecentOrders($limit: Int!, $customerId: ID!) {
           closedAt
           cancelledAt
           paymentGatewayNames
-          closedAt
-          cancelledAt
           lineItems(first: 100) {
             edges {
               node {
