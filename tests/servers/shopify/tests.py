@@ -63,26 +63,16 @@ def extract_result(response, key_phrase):
 # Shared context dictionary
 SHARED_CONTEXT: dict[str, Any] = {}
 
-
+# Static test inputs - Please update these with valid values for your test environment
 TEST_INPUTS = {
-    "test_email": "engine_out@gmail.com",
-    "test_phone": "+19054567890",
-    "test_order_number": "#1010",
-    "test_customer_id": "7728413966441",
-    "test_order_id_to_cancel": "6512202023017",
-    "test_order_id_to_calculate_refund": "6516391477353",
-    "test_line_item_id_to_calculate_refund": "15606942302313",
+    "test_email": "test@example.com",
+    "test_phone": "+1234567890",
+    "test_order_number": "#1001",
+    "test_customer_id": "1234567890",
+    "test_order_id_to_cancel": "1234567890",
+    "test_order_id_to_calculate_refund": "1234567890",
+    "test_line_item_id_to_calculate_refund": "1234567890",
 }
-
-# TEST_INPUTS = {
-#     "test_email": "test@example.com",
-#     "test_phone": "+1234567890",
-#     "test_order_number": "#1001",
-#     "test_customer_id": "1234567890",
-#     "test_order_id_to_cancel": "1234567890",
-#     "test_order_id_to_calculate_refund": "1234567890",
-#     "test_line_item_id_to_calculate_refund": "1234567890",
-# }
 
 
 @pytest.fixture(scope="module")
