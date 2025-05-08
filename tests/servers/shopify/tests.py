@@ -1,5 +1,6 @@
 import re
 import uuid
+from typing import Any
 
 import pytest
 
@@ -50,11 +51,38 @@ def extract_result(response, key_phrase):
         if matches:
             return matches[0].group(1)
 
+    if key_phrase == "parent_id":
+        parent_id_pattern = r"[\"'](\d+)[\"']"
+        matches = list(re.finditer(parent_id_pattern, response))
+        if matches:
+            return matches[0].group(1)
+
     return None
 
 
 # Shared context dictionary
-SHARED_CONTEXT = {}
+SHARED_CONTEXT: dict[str, Any] = {}
+
+
+TEST_INPUTS = {
+    "test_email": "engine_out@gmail.com",
+    "test_phone": "+19054567890",
+    "test_order_number": "#1010",
+    "test_customer_id": "7728413966441",
+    "test_order_id_to_cancel": "6512202023017",
+    "test_order_id_to_calculate_refund": "6516391477353",
+    "test_line_item_id_to_calculate_refund": "15606942302313",
+}
+
+# TEST_INPUTS = {
+#     "test_email": "test@example.com",
+#     "test_phone": "+1234567890",
+#     "test_order_number": "#1001",
+#     "test_customer_id": "1234567890",
+#     "test_order_id_to_cancel": "1234567890",
+#     "test_order_id_to_calculate_refund": "1234567890",
+#     "test_line_item_id_to_calculate_refund": "1234567890",
+# }
 
 
 @pytest.fixture(scope="module")
@@ -138,14 +166,13 @@ TOOL_TESTS = [
     },
     {
         "name": "calculate_refund",
-        "args_template": 'with orderId="{order_id}" lineItemId="{line_item_id}" restockType="NO_RESTOCK"',
+        "args_template": f'with orderId="{TEST_INPUTS["test_order_id_to_calculate_refund"]}" lineItemId="{TEST_INPUTS["test_line_item_id_to_calculate_refund"]}" restockType="NO_RESTOCK"',
         "expected_keywords": ["amount", "gateway"],
         "regex_extractors": {
             "refund_amount": r'"?amount"?[:\s]+"?([^"]+)"?',
             "gateway": r'"?gateway"?[:\s]+"?([^"]+)"?',
         },
         "description": "Calculate refund for order line item",
-        "depends_on": ["order_id", "line_item_id"],
     },
     {
         "name": "get_locations",
@@ -158,13 +185,84 @@ TOOL_TESTS = [
     },
     {
         "name": "create_refund",
-        "args_template": 'with orderId="{order_id}" lineItemId="{line_item_id}" restockType="NO_RESTOCK" amount="{refund_amount}" gateway="{gateway}" note="Test refund" transactionKind="REFUND" transactionParentId="1"',
+        "args_template": 'with orderId="{order_id}" lineItemId="{line_item_id}" restockType="NO_RESTOCK" amount="{refund_amount}" gateway="{gateway}" note="Test refund" transactionKind="REFUND" transactionParentId="{parent_id}"',
         "expected_keywords": ["refund_id"],
         "regex_extractors": {
             "refund_id": r'"?refund_id"?[:\s]+"?([^"]+)"?',
         },
         "description": "Create refund for order line item",
-        "depends_on": ["order_id", "line_item_id", "refund_amount", "gateway"],
+        "depends_on": [
+            "order_id",
+            "line_item_id",
+            "refund_amount",
+            "gateway",
+            "parent_id",
+        ],
+    },
+    {
+        "name": "get_contact_by_email",
+        "args": f'with email="{TEST_INPUTS["test_email"]}"',
+        "expected_keywords": ["id", "firstName", "lastName", "email"],
+        "regex_extractors": {
+            "customer_id": r'"?customer_id"?[:\s]+"?([^"]+)"?',
+        },
+        "description": "Get customer details by email",
+    },
+    {
+        "name": "get_contact_by_phone",
+        "args": f'with phone="{TEST_INPUTS["test_phone"]}"',
+        "expected_keywords": ["id", "firstName", "lastName", "phone"],
+        "regex_extractors": {
+            "customer_id": r'"?customer_id"?[:\s]+"?([^"]+)"?',
+        },
+        "description": "Get customer details by phone",
+    },
+    {
+        "name": "get_contact_by_id",
+        "args_template": f'with id="{TEST_INPUTS["test_customer_id"]}"',
+        "expected_keywords": [
+            "id",
+            "firstName",
+            "lastName",
+            "email",
+            "phone",
+            "defaultAddress",
+        ],
+        "description": "Get detailed customer information by ID",
+    },
+    {
+        "name": "get_order_by_number",
+        "args": f'with name="{TEST_INPUTS["test_order_number"]}"',
+        "expected_keywords": [
+            "id",
+            "name",
+            "confirmationNumber",
+            "displayFulfillmentStatus",
+            "totalPriceSet",
+        ],
+        "regex_extractors": {
+            "order_id": r'"?order_id"?[:\s]+"?([^"]+)"?',
+            "test_customer_id": r'"?customer_id"?[:\s]+"?([^"]+)"?',
+        },
+        "description": "Get order details by order number",
+    },
+    {
+        "name": "get_recent_orders",
+        "args_template": f'with limit=5 customer_id="{TEST_INPUTS["test_customer_id"]}"',
+        "expected_keywords": [
+            "edges",
+            "node",
+            "name",
+            "confirmationNumber",
+            "displayFulfillmentStatus",
+        ],
+        "description": "Get recent orders for a customer",
+    },
+    {
+        "name": "cancel_order",
+        "args_template": f'with id="{TEST_INPUTS["test_order_id_to_cancel"]}" refund=true restock=true staffNote="Test cancellation" reason="CUSTOMER"',
+        "expected_keywords": ["userErrors"],
+        "description": "Cancel an order",
     },
 ]
 
