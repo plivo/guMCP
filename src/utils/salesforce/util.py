@@ -1,15 +1,15 @@
-import os
 import base64
-import logging
-from typing import Dict, List, Any
 import json
+import logging
+import os
 from pathlib import Path
+from typing import Any, Dict, List
 
 from src.utils.oauth.util import (
-    run_oauth_flow,
-    refresh_token_if_needed,
-    generate_code_verifier,
     generate_code_challenge,
+    generate_code_verifier,
+    refresh_token_if_needed,
+    run_oauth_flow,
 )
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ def build_salesforce_token_headers(oauth_config: Dict[str, Any]) -> Dict[str, st
     Returns:
         Dictionary of headers.
     """
-    credentials = f'{oauth_config["client_id"]}:{oauth_config["client_secret"]}'
+    credentials = f"{oauth_config['client_id']}:{oauth_config['client_secret']}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
     return {
@@ -170,7 +170,9 @@ def authenticate_and_save_credentials(
     )
 
 
-async def get_credentials(user_id: str, service_name: str, api_key: str = None) -> str:
+async def get_credentials(
+    user_id: str, service_name: str, api_key: str | None = None
+) -> dict[str, Any]:
     """
     Retrieve (or refresh if needed) the access token for Snowflake.
 
@@ -182,6 +184,12 @@ async def get_credentials(user_id: str, service_name: str, api_key: str = None) 
     Returns:
         A valid access token string.
     """
+    if os.environ.get("ENVIRONMENT", "local") == "custom":
+        from src.auth.factory import create_auth_client
+
+        auth_client = create_auth_client(api_key=api_key)
+        return auth_client.get_user_credentials(service_name, user_id)
+
     token_url = get_salesforce_url(service_name, "token")
     salesforce_token_data = await refresh_token_if_needed(
         user_id=user_id,
