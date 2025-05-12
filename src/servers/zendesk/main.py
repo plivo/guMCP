@@ -1,10 +1,11 @@
 import json
 import os
 import sys
-from typing import Iterable, Optional
+from typing import Any, Iterable
 
 from src.utils.utils import (
     CustomFields,
+    ToolResponse,
     has_create_permission,
     has_edit_permission,
     has_view_permission,
@@ -54,8 +55,13 @@ logger = logging.getLogger(SERVICE_NAME)
 
 
 async def make_zendesk_request(
-    method, path, access_token=None, subdomain=None, data=None, params=None
-):
+    method: str,
+    path: str,
+    access_token: str | None = None,
+    subdomain: str | None = None,
+    data: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Make a request to the Zendesk API"""
     if not access_token:
         raise ValueError("Zendesk access token is required")
@@ -89,13 +95,1016 @@ async def make_zendesk_request(
         return response.json()
 
 
+async def filter_custom_fields(
+    custom_fields: CustomFields, raw_fields: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Filter custom fields based on permissions."""
+    filtered_fields: list[dict[str, Any]] = []
+    for field in raw_fields:
+        if isinstance(field, dict) and "id" in field and "value" in field:
+            field_id = field["id"]
+            field_value = field["value"]
+            if has_view_permission(custom_fields, field_id):
+                field_title = field.get("title", "")
+                filtered_fields.append(
+                    {
+                        "id": field_id,
+                        "value": field_value,
+                        "title": field_title,
+                    }
+                )
+    return filtered_fields
+
+
+async def search_tickets(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Search for tickets in Zendesk."""
+    if "query" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing query parameter",
+        }
+
+    search_query = arguments["query"]
+
+    params = {
+        "query": search_query,
+        "sort_by": arguments.get("sort_by", "created_at"),
+        "sort_order": arguments.get("sort_order", "desc"),
+        "per_page": arguments.get("per_page", 10),
+    }
+
+    try:
+        result = await make_zendesk_request(
+            "get", "search.json", access_token, subdomain, params=params
+        )
+        results = result.get("results", [])
+
+        # Filter to just tickets
+        tickets = [r for r in results if r.get("type") == "ticket"]
+
+        if not tickets:
+            return {
+                "success": True,
+                "data": {"tickets": []},
+                "error": None,
+            }
+
+        response_data = {
+            "tickets": [
+                {
+                    "id": str(ticket.get("id")),
+                    "subject": ticket.get("subject"),
+                    "description": ticket.get("description", ""),
+                    "status": ticket.get("status", ""),
+                    "priority": ticket.get("priority", ""),
+                    "created_at": ticket.get("created_at"),
+                    "updated_at": ticket.get("updated_at"),
+                    "tags": ticket.get("tags", []),
+                    "url": ticket.get("url", ""),
+                }
+                for ticket in tickets
+            ]
+        }
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error searching tickets: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error searching tickets: {str(e)}",
+        }
+
+
+async def create_ticket(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Create a new ticket in Zendesk."""
+    required_fields = [
+        "contact_id",
+        "subject",
+        "description",
+        "priority",
+        "type",
+        "status",
+    ]
+    for field in required_fields:
+        if field not in arguments:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Missing required parameter: {field}",
+            }
+
+    ticket_data = {
+        "ticket": {
+            "subject": arguments["subject"],
+            "comment": {"body": arguments["description"]},
+            "priority": arguments["priority"],
+            "type": arguments["type"],
+            "status": arguments["status"],
+            "requester_id": arguments["contact_id"],
+        }
+    }
+
+    # Add optional fields
+    if "tags" in arguments:
+        ticket_data["ticket"]["tags"] = arguments["tags"]
+
+    # Add custom fields if provided, filtering by permission and config
+    if "custom_fields" in arguments:
+        # Filter to only include fields with create permission
+        custom_field_data: list[dict[str, Any]] = []
+        for field in arguments["custom_fields"]:
+            if isinstance(field, dict) and "id" in field:
+                field_id = field["id"]
+                if has_create_permission(custom_fields, field_id):
+                    custom_field_data.append(field)
+
+        if custom_field_data:
+            ticket_data["ticket"]["custom_fields"] = custom_field_data
+
+    try:
+        result = await make_zendesk_request(
+            "post",
+            "tickets.json",
+            access_token,
+            subdomain,
+            data=ticket_data,
+        )
+        ticket = result.get("ticket", {})
+
+        if ticket:
+            # Filter custom fields to only include those with view permission
+            filtered_custom_fields = await filter_custom_fields(
+                custom_fields, ticket.get("custom_fields", [])
+            )
+
+            response_data = {
+                "id": str(ticket.get("id")),
+                "contact_id": str(ticket.get("requester_id", "")),
+                "subject": ticket.get("subject", ""),
+                "description": ticket.get("description", ""),
+                "status": ticket.get("status", ""),
+                "priority": ticket.get("priority", ""),
+                "type": ticket.get("type", ""),
+                "tags": ticket.get("tags", []),
+                "created_at": ticket.get("created_at", ""),
+                "updated_at": ticket.get("updated_at", ""),
+                "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
+                "custom_fields": filtered_custom_fields,
+            }
+
+            return {
+                "success": True,
+                "data": response_data,
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Failed to create ticket: {json.dumps(result, indent=2)}",
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating ticket: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error creating ticket: {str(e)}",
+        }
+
+
+async def update_ticket(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Update an existing ticket in Zendesk."""
+    if "id" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: id",
+        }
+
+    ticket_id = arguments["id"]
+
+    # Start with an empty ticket structure
+    ticket_data: dict[str, dict[str, Any]] = {"ticket": {}}
+
+    # Add fields that are present
+    if "contact_id" in arguments:
+        ticket_data["ticket"]["requester_id"] = arguments["contact_id"]
+    if "subject" in arguments:
+        ticket_data["ticket"]["subject"] = arguments["subject"]
+    if "description" in arguments:
+        ticket_data["ticket"]["comment"] = {"body": arguments["description"]}
+    if "status" in arguments:
+        ticket_data["ticket"]["status"] = arguments["status"]
+    if "priority" in arguments:
+        ticket_data["ticket"]["priority"] = arguments["priority"]
+    if "type" in arguments:
+        ticket_data["ticket"]["type"] = arguments["type"]
+    if "tags" in arguments:
+        ticket_data["ticket"]["tags"] = arguments["tags"]
+
+    # Add custom fields if provided, filtering by permission and config
+    if "custom_fields" in arguments:
+        # Filter to only include fields with edit permission
+        custom_field_data = []
+        for field in arguments["custom_fields"]:
+            if isinstance(field, dict) and "id" in field:
+                field_id = int(field["id"])  # Convert id to number
+                if has_edit_permission(custom_fields, field["id"]):
+                    field["id"] = field_id  # Update field with numeric id
+                    custom_field_data.append(field)
+
+        if custom_field_data:
+            ticket_data["ticket"]["custom_fields"] = custom_field_data
+
+    if len(ticket_data["ticket"]) <= 0:
+        return {
+            "success": False,
+            "data": None,
+            "error": "At least one field to update must be provided",
+        }
+
+    try:
+        result = await make_zendesk_request(
+            "put",
+            f"tickets/{ticket_id}.json",
+            access_token,
+            subdomain,
+            data=ticket_data,
+        )
+
+        ticket = result.get("ticket", {})
+
+        if ticket:
+            # Filter custom fields to only include those with view permission
+            filtered_custom_fields = await filter_custom_fields(
+                custom_fields, ticket.get("custom_fields", [])
+            )
+
+            response_data = {
+                "id": str(ticket.get("id")),
+                "contact_id": str(ticket.get("requester_id", "")),
+                "subject": ticket.get("subject", ""),
+                "description": ticket.get("description", ""),
+                "status": ticket.get("status", ""),
+                "priority": ticket.get("priority", ""),
+                "type": ticket.get("type", ""),
+                "tags": ticket.get("tags", []),
+                "created_at": ticket.get("created_at", ""),
+                "updated_at": ticket.get("updated_at", ""),
+                "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
+                "custom_fields": filtered_custom_fields,
+            }
+
+            return {
+                "success": True,
+                "data": response_data,
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Failed to update ticket: {json.dumps(result, indent=2)}",
+            }
+
+    except Exception as e:
+        logger.error(f"Error updating ticket: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error updating ticket: {str(e)}",
+        }
+
+
+async def add_comment(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Add a comment to an existing ticket."""
+    required_fields = ["id", "comment"]
+    for field in required_fields:
+        if field not in arguments:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Missing required parameter: {field}",
+            }
+
+    ticket_id = arguments["id"]
+    comment_text = arguments["comment"]
+    is_public = arguments.get("public", True)
+
+    ticket_data: dict[str, dict[str, Any]] = {
+        "ticket": {"comment": {"body": comment_text, "public": is_public}}
+    }
+
+    try:
+        result = await make_zendesk_request(
+            "put",
+            f"tickets/{ticket_id}.json",
+            access_token,
+            subdomain,
+            data=ticket_data,
+        )
+
+        ticket = result.get("ticket", {})
+
+        if ticket:
+            # Filter custom fields to only include those with view permission
+            filtered_custom_fields = await filter_custom_fields(
+                custom_fields, ticket.get("custom_fields", [])
+            )
+
+            # Return TicketDetails structure with comment info and custom fields
+            response_data = {
+                "id": str(ticket.get("id")),
+                "contact_id": str(ticket.get("requester_id", "")),
+                "subject": ticket.get("subject", ""),
+                "status": ticket.get("status", ""),
+                "priority": ticket.get("priority", ""),
+                "type": ticket.get("type", ""),
+                "updated_at": ticket.get("updated_at", ""),
+                "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
+                "custom_fields": filtered_custom_fields,
+            }
+
+            return {
+                "success": True,
+                "data": response_data,
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Failed to add comment: {json.dumps(result, indent=2)}",
+            }
+
+    except Exception as e:
+        logger.error(f"Error adding comment: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error adding comment: {str(e)}",
+        }
+
+
+async def get_ticket_details(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Get detailed information about a specific ticket."""
+    if "id" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: id",
+        }
+
+    ticket_id = arguments["id"]
+
+    try:
+        result = await make_zendesk_request(
+            "get", f"tickets/{ticket_id}.json", access_token, subdomain
+        )
+
+        ticket = result.get("ticket", {})
+
+        if not ticket:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No ticket found with ID: {ticket_id}",
+            }
+
+        # Filter custom fields to only include those with view permission
+        filtered_custom_fields = await filter_custom_fields(
+            custom_fields, ticket.get("custom_fields", [])
+        )
+
+        response_data = {
+            "id": str(ticket.get("id")),
+            "contact_id": str(ticket.get("requester_id", "")),
+            "subject": ticket.get("subject", ""),
+            "description": ticket.get("description", ""),
+            "status": ticket.get("status", ""),
+            "priority": ticket.get("priority", ""),
+            "type": ticket.get("type", ""),
+            "tags": ticket.get("tags", []),
+            "created_at": ticket.get("created_at", ""),
+            "updated_at": ticket.get("updated_at", ""),
+            "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
+            "custom_fields": filtered_custom_fields,
+        }
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting ticket details: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting ticket details: {str(e)}",
+        }
+
+
+async def get_recent_tickets(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Get recent tickets for a specific contact."""
+    if "contact_id" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: contact_id",
+        }
+
+    contact_id = arguments["contact_id"]
+    limit = arguments.get("limit", 10)
+
+    try:
+        result = await make_zendesk_request(
+            "get",
+            f"users/{contact_id}/tickets/requested.json?sort_by=updated_at&sort_order=desc&per_page={limit}",
+            access_token,
+            subdomain,
+        )
+
+        tickets = result.get("tickets", [])
+
+        if not tickets:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No recent tickets found for contact ID: {contact_id}",
+            }
+
+        ticket_list = []
+
+        for ticket in tickets:
+            # Process custom fields for this ticket
+            filtered_custom_fields = await filter_custom_fields(
+                custom_fields, ticket.get("custom_fields", [])
+            )
+
+            ticket_data = {
+                "id": str(ticket.get("id")),
+                "contact_id": contact_id,
+                "subject": ticket.get("subject", ""),
+                "description": ticket.get("description", ""),
+                "status": ticket.get("status", ""),
+                "priority": ticket.get("priority", ""),
+                "type": ticket.get("type", ""),
+                "created_at": ticket.get("created_at", ""),
+                "updated_at": ticket.get("updated_at", ""),
+                "tags": ticket.get("tags", []),
+                "url": ticket.get("url", ""),
+                "custom_fields": filtered_custom_fields,
+            }
+
+            ticket_list.append(ticket_data)
+
+        response_data = {"tickets": ticket_list}
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting recent tickets: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting recent tickets: {str(e)}",
+        }
+
+
+async def get_recent_tickets_by_email(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Get recent tickets for a user by their email."""
+    if "email" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: email",
+        }
+
+    email = arguments["email"]
+    limit = arguments.get("limit", 10)
+
+    try:
+        # First, get the user ID by email
+        user_search_result = await make_zendesk_request(
+            "get",
+            f"users/search.json?query={email}",
+            access_token,
+            subdomain,
+        )
+
+        users = user_search_result.get("users", [])
+
+        if not users:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No user found with email: {email}",
+            }
+
+        # Use the first matching user
+        user_id = users[0]["id"]
+
+        # Get tickets for this user
+        result = await make_zendesk_request(
+            "get",
+            f"users/{user_id}/tickets/requested.json?sort_by=updated_at&sort_order=desc&per_page={limit}",
+            access_token,
+            subdomain,
+        )
+
+        tickets = result.get("tickets", [])
+
+        if not tickets:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No recent tickets found for email: {email}",
+            }
+
+        ticket_list = []
+
+        for ticket in tickets:
+            # Process custom fields for this ticket
+            filtered_custom_fields = await filter_custom_fields(
+                custom_fields, ticket.get("custom_fields", [])
+            )
+
+            ticket_data = {
+                "id": str(ticket.get("id")),
+                "contact_id": str(user_id),
+                "subject": ticket.get("subject", ""),
+                "description": ticket.get("description", ""),
+                "status": ticket.get("status", ""),
+                "priority": ticket.get("priority", ""),
+                "type": ticket.get("type", ""),
+                "created_at": ticket.get("created_at", ""),
+                "updated_at": ticket.get("updated_at", ""),
+                "tags": ticket.get("tags", []),
+                "url": ticket.get("url", ""),
+                "custom_fields": filtered_custom_fields,
+            }
+
+            ticket_list.append(ticket_data)
+
+        response_data = {"tickets": ticket_list}
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting recent tickets by email: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting recent tickets by email: {str(e)}",
+        }
+
+
+async def get_recent_tickets_by_phone_number(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Get recent tickets for a user by their phone number."""
+    if "phone_number" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: phone_number",
+        }
+
+    phone_number = arguments["phone_number"]
+    limit = arguments.get("limit", 10)
+
+    try:
+        # First, get the user ID by phone number
+        user_search_result = await make_zendesk_request(
+            "get",
+            f"users/search.json?query={phone_number}",
+            access_token,
+            subdomain,
+        )
+
+        users = user_search_result.get("users", [])
+
+        if not users:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No user found with phone number: {phone_number}",
+            }
+
+        # Use the first matching user
+        user_id = users[0]["id"]
+
+        # Get tickets for this user
+        result = await make_zendesk_request(
+            "get",
+            f"users/{user_id}/tickets/requested.json?sort_by=updated_at&sort_order=desc&per_page={limit}",
+            access_token,
+            subdomain,
+        )
+
+        tickets = result.get("tickets", [])
+
+        if not tickets:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No recent tickets found for phone number: {phone_number}",
+            }
+
+        ticket_list = []
+
+        for ticket in tickets:
+            # Process custom fields for this ticket
+            filtered_custom_fields = await filter_custom_fields(
+                custom_fields, ticket.get("custom_fields", [])
+            )
+
+            ticket_data = {
+                "id": str(ticket.get("id")),
+                "contact_id": str(user_id),
+                "subject": ticket.get("subject", ""),
+                "description": ticket.get("description", ""),
+                "status": ticket.get("status", ""),
+                "priority": ticket.get("priority", ""),
+                "type": ticket.get("type", ""),
+                "created_at": ticket.get("created_at", ""),
+                "updated_at": ticket.get("updated_at", ""),
+                "tags": ticket.get("tags", []),
+                "url": ticket.get("url", ""),
+                "custom_fields": filtered_custom_fields,
+            }
+
+            ticket_list.append(ticket_data)
+
+        response_data = {"tickets": ticket_list}
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting recent tickets by phone number: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting recent tickets by phone number: {str(e)}",
+        }
+
+
+async def create_user(
+    access_token: str, subdomain: str, arguments: dict[str, Any]
+) -> ToolResponse:
+    """Create a new user in Zendesk."""
+    if "name" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: name",
+        }
+
+    # Build user data
+    user_data = {
+        "user": {
+            "name": arguments["name"],
+            "role": "end-user",
+        }
+    }
+
+    # Add optional fields
+    if "email" in arguments:
+        user_data["user"]["email"] = arguments["email"]
+    if "phone_number" in arguments:
+        user_data["user"]["phone"] = arguments["phone_number"]
+
+    try:
+        result = await make_zendesk_request(
+            "post", "users.json", access_token, subdomain, data=user_data
+        )
+
+        user = result.get("user", {})
+
+        if user:
+            response_data = {
+                "id": str(user.get("id")),
+                "name": user.get("name", ""),
+                "email": user.get("email", ""),
+                "phone_number": user.get("phone", ""),
+            }
+
+            return {
+                "success": True,
+                "data": response_data,
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"Failed to create user: {json.dumps(result, indent=2)}",
+            }
+
+    except Exception as e:
+        logger.error(f"Error creating user: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error creating user: {str(e)}",
+        }
+
+
+async def get_contact_by_email(
+    access_token: str, subdomain: str, arguments: dict[str, Any]
+) -> ToolResponse:
+    """Find a contact by their email address."""
+    if "email" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: email",
+        }
+
+    email = arguments["email"]
+
+    try:
+        result = await make_zendesk_request(
+            "get",
+            f"users/search.json?query={email}",
+            access_token,
+            subdomain,
+        )
+
+        users = result.get("users", [])
+
+        if not users:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No user found with email: {email}",
+            }
+
+        # Use the first matching user
+        user = users[0]
+
+        response_data = {
+            "id": str(user.get("id")),
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+            "phone_number": user.get("phone", ""),
+        }
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting contact by email: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting contact by email: {str(e)}",
+        }
+
+
+async def get_contact_by_phone_number(
+    access_token: str, subdomain: str, arguments: dict[str, Any]
+) -> ToolResponse:
+    """Find a contact by their phone number."""
+    if "phone_number" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: phone_number",
+        }
+
+    phone_number = arguments["phone_number"]
+
+    try:
+        result = await make_zendesk_request(
+            "get",
+            f"users/search.json?query={phone_number}",
+            access_token,
+            subdomain,
+        )
+
+        users = result.get("users", [])
+
+        if not users:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No user found with phone number: {phone_number}",
+            }
+
+        # Use the first matching user
+        user = users[0]
+
+        response_data = {
+            "id": str(user.get("id")),
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+            "phone_number": user.get("phone", ""),
+        }
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting contact by phone number: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting contact by phone number: {str(e)}",
+        }
+
+
+async def get_contact_by_id(
+    access_token: str, subdomain: str, arguments: dict[str, Any]
+) -> ToolResponse:
+    """Find a contact by their Zendesk user ID."""
+    if "id" not in arguments:
+        return {
+            "success": False,
+            "data": None,
+            "error": "Missing required parameter: id",
+        }
+
+    user_id = arguments["id"]
+
+    try:
+        result = await make_zendesk_request(
+            "get", f"users/{user_id}.json", access_token, subdomain
+        )
+
+        user = result.get("user", {})
+
+        if not user:
+            return {
+                "success": False,
+                "data": None,
+                "error": f"No user found with ID: {user_id}",
+            }
+
+        response_data = {
+            "id": str(user.get("id")),
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+            "phone_number": user.get("phone", ""),
+        }
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting contact by ID: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting contact by ID: {str(e)}",
+        }
+
+
+async def get_ticket_fields(
+    access_token: str,
+    subdomain: str,
+    custom_fields: CustomFields,
+    arguments: dict[str, Any],
+) -> ToolResponse:
+    """Get available ticket fields."""
+    try:
+        # Get all ticket fields from Zendesk
+        result = await make_zendesk_request(
+            "get", "ticket_fields.json", access_token, subdomain
+        )
+
+        ticket_fields = result.get("ticket_fields", [])
+
+        if not ticket_fields:
+            return {
+                "success": False,
+                "data": None,
+                "error": "No ticket fields found.",
+            }
+
+        # Filter to include only custom fields that are active, in the config, and have view permission
+        filtered_custom_fields = []
+        for field in ticket_fields:
+            if isinstance(field, dict) and "id" in field:
+                field_id = field["id"]
+                # Include field if it's active, removable, and has view permission
+                if (
+                    field.get("active", False)
+                    and field.get("removable", False)
+                    and has_view_permission(custom_fields, field_id)
+                ):
+                    # Add permission info
+                    field_data = {
+                        "id": field_id,
+                        "title": field.get("title", ""),
+                        "type": field.get("type", ""),
+                        "description": field.get("description", ""),
+                        "required": field.get("required", False),
+                        "options": field.get("custom_field_options", []),
+                    }
+
+                    # Add permission info if field is in config
+                    if str(field_id) in custom_fields:
+                        field_config = custom_fields[str(field_id)]
+                        field_data["can_view"] = field_config.get("view", False)
+                        field_data["can_edit"] = field_config.get("edit", False)
+                        field_data["can_create"] = field_config.get("create", False)
+
+                    filtered_custom_fields.append(field_data)
+
+        response_data = {"custom_fields": filtered_custom_fields}
+
+        return {
+            "success": True,
+            "data": response_data,
+            "error": None,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting ticket fields: {str(e)}")
+        return {
+            "success": False,
+            "data": None,
+            "error": f"Error getting ticket fields: {str(e)}",
+        }
+
+
 def create_server(user_id, api_key=None):
     """Create a new server instance with optional user context"""
     server = Server("zendesk-server")
 
     server.user_id = user_id
 
-    async def get_zendesk_client():
+    async def get_zendesk_client() -> tuple[str, str, CustomFields]:
         """Get Zendesk access token and subdomain for the current user"""
         # Get access token
         access_token = await get_credentials(user_id, SERVICE_NAME, api_key=api_key)
@@ -109,7 +1118,7 @@ def create_server(user_id, api_key=None):
 
     @server.list_resources()
     async def handle_list_resources(
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[Resource]:
         """List resources from Zendesk"""
         logger.info(
@@ -523,1029 +1532,81 @@ def create_server(user_id, api_key=None):
 
         try:
             access_token, subdomain, custom_fields = await get_zendesk_client()
+            response_result: ToolResponse = {
+                "success": False,
+                "data": None,
+                "error": "Unknown tool",
+            }
 
             if name == "search_tickets":
-                if "query" not in arguments:
-                    raise ValueError("Missing query parameter")
-
-                search_query = arguments["query"]
-
-                params = {
-                    "query": search_query,
-                    "sort_by": arguments.get("sort_by", "created_at"),
-                    "sort_order": arguments.get("sort_order", "desc"),
-                    "per_page": arguments.get("per_page", 10),
-                }
-
-                try:
-                    result = await make_zendesk_request(
-                        "get", "search.json", access_token, subdomain, params=params
-                    )
-                    results = result.get("results", [])
-
-                    # Filter to just tickets
-                    tickets = [r for r in results if r.get("type") == "ticket"]
-
-                    if not tickets:
-                        return [
-                            TextContent(
-                                type="text",
-                                text="No tickets found matching your query.",
-                            )
-                        ]
-
-                    response_data = {
-                        "tickets": [
-                            {
-                                "id": str(ticket.get("id")),
-                                "subject": ticket.get("subject"),
-                                "description": ticket.get("description", ""),
-                                "status": ticket.get("status", ""),
-                                "priority": ticket.get("priority", ""),
-                                "created_at": ticket.get("created_at"),
-                                "updated_at": ticket.get("updated_at"),
-                                "tags": ticket.get("tags", []),
-                                "url": ticket.get("url", ""),
-                            }
-                            for ticket in tickets
-                        ]
-                    }
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error searching tickets: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error searching tickets: {str(e)}",
-                        )
-                    ]
-
+                response_result = await search_tickets(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "create_ticket":
-                required_fields = [
-                    "contact_id",
-                    "subject",
-                    "description",
-                    "priority",
-                    "type",
-                    "status",
-                ]
-                for field in required_fields:
-                    if field not in arguments:
-                        raise ValueError(f"Missing required parameter: {field}")
-
-                ticket_data = {
-                    "ticket": {
-                        "subject": arguments["subject"],
-                        "comment": {"body": arguments["description"]},
-                        "priority": arguments["priority"],
-                        "type": arguments["type"],
-                        "status": arguments["status"],
-                        "requester_id": arguments["contact_id"],
-                    }
-                }
-
-                # Add optional fields
-                if "tags" in arguments:
-                    ticket_data["ticket"]["tags"] = arguments["tags"]
-
-                # Add custom fields if provided, filtering by permission and config
-                if "custom_fields" in arguments:
-                    # Filter to only include fields with create permission
-                    custom_field_data = []
-                    for field in arguments["custom_fields"]:
-                        if isinstance(field, dict) and "id" in field:
-                            field_id = field["id"]
-                            if has_create_permission(custom_fields, field_id):
-                                custom_field_data.append(field)
-
-                    if custom_field_data:
-                        ticket_data["ticket"]["custom_fields"] = custom_field_data
-
-                try:
-                    result = await make_zendesk_request(
-                        "post",
-                        "tickets.json",
-                        access_token,
-                        subdomain,
-                        data=ticket_data,
-                    )
-                    ticket = result.get("ticket", {})
-
-                    if ticket:
-                        # Filter custom fields to only include those with view permission
-                        filtered_custom_fields = []
-                        raw_custom_fields = ticket.get("custom_fields", [])
-                        for field in raw_custom_fields:
-                            if (
-                                isinstance(field, dict)
-                                and "id" in field
-                                and "value" in field
-                            ):
-                                field_id = field["id"]
-                                field_value = field["value"]
-                                if has_view_permission(custom_fields, field_id):
-                                    field_title = field.get("title", "")
-                                    filtered_custom_fields.append(
-                                        {
-                                            "id": field_id,
-                                            "value": field_value,
-                                            "title": field_title,
-                                        }
-                                    )
-
-                        response_data = {
-                            "id": str(ticket.get("id")),
-                            "contact_id": str(ticket.get("requester_id", "")),
-                            "subject": ticket.get("subject", ""),
-                            "description": ticket.get("description", ""),
-                            "status": ticket.get("status", ""),
-                            "priority": ticket.get("priority", ""),
-                            "type": ticket.get("type", ""),
-                            "tags": ticket.get("tags", []),
-                            "created_at": ticket.get("created_at", ""),
-                            "updated_at": ticket.get("updated_at", ""),
-                            "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
-                            "custom_fields": filtered_custom_fields,
-                        }
-
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Success: {json.dumps(response_data, indent=2)}",
-                            )
-                        ]
-                    else:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: Failed to create ticket: {json.dumps(result, indent=2)}",
-                            )
-                        ]
-
-                except Exception as e:
-                    logger.error(f"Error creating ticket: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error creating ticket: {str(e)}",
-                        )
-                    ]
-
+                response_result = await create_ticket(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "update_ticket":
-
-                if "id" not in arguments:
-                    raise ValueError("Missing required parameter: id")
-
-                ticket_id = arguments["id"]
-
-                # Start with an empty ticket structure
-                ticket_data = {"ticket": {}}
-
-                # Add fields that are present
-                if "contact_id" in arguments:
-                    ticket_data["ticket"]["requester_id"] = arguments["contact_id"]
-                if "subject" in arguments:
-                    ticket_data["ticket"]["subject"] = arguments["subject"]
-                if "description" in arguments:
-                    ticket_data["ticket"]["comment"] = {
-                        "body": arguments["description"]
-                    }
-                if "status" in arguments:
-                    ticket_data["ticket"]["status"] = arguments["status"]
-                if "priority" in arguments:
-                    ticket_data["ticket"]["priority"] = arguments["priority"]
-                if "type" in arguments:
-                    ticket_data["ticket"]["type"] = arguments["type"]
-                if "tags" in arguments:
-                    ticket_data["ticket"]["tags"] = arguments["tags"]
-
-                # Add custom fields if provided, filtering by permission and config
-                if "custom_fields" in arguments:
-                    # Filter to only include fields with edit permission
-                    custom_field_data = []
-                    for field in arguments["custom_fields"]:
-                        if isinstance(field, dict) and "id" in field:
-                            field_id = int(field["id"])  # Convert id to number
-                            if has_edit_permission(custom_fields, field["id"]):
-                                field["id"] = field_id  # Update field with numeric id
-                                custom_field_data.append(field)
-
-                    if custom_field_data:
-                        ticket_data["ticket"]["custom_fields"] = custom_field_data
-
-                if len(ticket_data["ticket"]) <= 0:
-                    raise ValueError("At least one field to update must be provided")
-
-                try:
-                    result = await make_zendesk_request(
-                        "put",
-                        f"tickets/{ticket_id}.json",
-                        access_token,
-                        subdomain,
-                        data=ticket_data,
-                    )
-
-                    ticket = result.get("ticket", {})
-
-                    if ticket:
-                        # Filter custom fields to only include those with view permission
-                        filtered_custom_fields = []
-                        raw_custom_fields = ticket.get("custom_fields", [])
-                        for field in raw_custom_fields:
-                            if (
-                                isinstance(field, dict)
-                                and "id" in field
-                                and "value" in field
-                            ):
-                                field_id = field["id"]
-                                field_value = field["value"]
-                                if has_view_permission(custom_fields, field_id):
-                                    field_title = field.get("title", "")
-                                    filtered_custom_fields.append(
-                                        {
-                                            "id": field_id,
-                                            "value": field_value,
-                                            "title": field_title,
-                                        }
-                                    )
-
-                        response_data = {
-                            "id": str(ticket.get("id")),
-                            "contact_id": str(ticket.get("requester_id", "")),
-                            "subject": ticket.get("subject", ""),
-                            "description": ticket.get("description", ""),
-                            "status": ticket.get("status", ""),
-                            "priority": ticket.get("priority", ""),
-                            "type": ticket.get("type", ""),
-                            "tags": ticket.get("tags", []),
-                            "created_at": ticket.get("created_at", ""),
-                            "updated_at": ticket.get("updated_at", ""),
-                            "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
-                            "custom_fields": filtered_custom_fields,
-                        }
-
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Success: {json.dumps(response_data, indent=2)}",
-                            )
-                        ]
-                    else:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: Failed to update ticket: {json.dumps(result, indent=2)}",
-                            )
-                        ]
-
-                except Exception as e:
-                    logger.error(f"Error updating ticket: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error updating ticket: {str(e)}",
-                        )
-                    ]
-
+                response_result = await update_ticket(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "add_comment":
-                required_fields = ["id", "comment"]
-                for field in required_fields:
-                    if field not in arguments:
-                        raise ValueError(f"Missing required parameter: {field}")
-
-                ticket_id = arguments["id"]
-                comment_text = arguments["comment"]
-                is_public = arguments.get("public", True)
-
-                ticket_data = {
-                    "ticket": {"comment": {"body": comment_text, "public": is_public}}
-                }
-
-                try:
-                    result = await make_zendesk_request(
-                        "put",
-                        f"tickets/{ticket_id}.json",
-                        access_token,
-                        subdomain,
-                        data=ticket_data,
-                    )
-
-                    ticket = result.get("ticket", {})
-
-                    if ticket:
-                        # Filter custom fields to only include those with view permission
-                        filtered_custom_fields = []
-                        raw_custom_fields = ticket.get("custom_fields", [])
-                        for field in raw_custom_fields:
-                            if (
-                                isinstance(field, dict)
-                                and "id" in field
-                                and "value" in field
-                            ):
-                                field_id = field["id"]
-                                field_value = field["value"]
-                                if has_view_permission(custom_fields, field_id):
-                                    field_title = field.get("title", "")
-                                    filtered_custom_fields.append(
-                                        {
-                                            "id": field_id,
-                                            "value": field_value,
-                                            "title": field_title,
-                                        }
-                                    )
-
-                        # Return TicketDetails structure with comment info and custom fields
-                        response_data = {
-                            "id": str(ticket.get("id")),
-                            "contact_id": str(ticket.get("requester_id", "")),
-                            "subject": ticket.get("subject", ""),
-                            "status": ticket.get("status", ""),
-                            "priority": ticket.get("priority", ""),
-                            "type": ticket.get("type", ""),
-                            "updated_at": ticket.get("updated_at", ""),
-                            "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
-                            "custom_fields": filtered_custom_fields,
-                        }
-
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Success: {json.dumps(response_data, indent=2)}",
-                            )
-                        ]
-                    else:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: Failed to add comment: {json.dumps(result, indent=2)}",
-                            )
-                        ]
-
-                except Exception as e:
-                    logger.error(f"Error adding comment: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text", text=f"Failure: Error adding comment: {str(e)}"
-                        )
-                    ]
-
+                response_result = await add_comment(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "get_ticket_details":
-                if "id" not in arguments:
-                    raise ValueError("Missing required parameter: id")
-
-                ticket_id = arguments["id"]
-
-                try:
-                    result = await make_zendesk_request(
-                        "get", f"tickets/{ticket_id}.json", access_token, subdomain
-                    )
-
-                    ticket = result.get("ticket", {})
-
-                    if not ticket:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No ticket found with ID: {ticket_id}",
-                            )
-                        ]
-
-                    # Filter custom fields to only include those with view permission
-                    filtered_custom_fields = []
-                    raw_custom_fields = ticket.get("custom_fields", [])
-                    for field in raw_custom_fields:
-                        if (
-                            isinstance(field, dict)
-                            and "id" in field
-                            and "value" in field
-                        ):
-                            field_id = field["id"]
-                            field_value = field["value"]
-                            if has_view_permission(custom_fields, field_id):
-                                field_title = field.get("title", "")
-                                filtered_custom_fields.append(
-                                    {
-                                        "id": field_id,
-                                        "value": field_value,
-                                        "title": field_title,
-                                    }
-                                )
-
-                    response_data = {
-                        "id": str(ticket.get("id")),
-                        "contact_id": str(ticket.get("requester_id", "")),
-                        "subject": ticket.get("subject", ""),
-                        "description": ticket.get("description", ""),
-                        "status": ticket.get("status", ""),
-                        "priority": ticket.get("priority", ""),
-                        "type": ticket.get("type", ""),
-                        "tags": ticket.get("tags", []),
-                        "created_at": ticket.get("created_at", ""),
-                        "updated_at": ticket.get("updated_at", ""),
-                        "url": f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
-                        "custom_fields": filtered_custom_fields,
-                    }
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting ticket details: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting ticket details: {str(e)}",
-                        )
-                    ]
-
+                response_result = await get_ticket_details(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "get_recent_tickets":
-                if "contact_id" not in arguments:
-                    raise ValueError("Missing required parameter: contact_id")
-
-                contact_id = arguments["contact_id"]
-                limit = arguments.get("limit", 10)
-
-                try:
-                    result = await make_zendesk_request(
-                        "get",
-                        f"users/{contact_id}/tickets/requested.json?sort_by=updated_at&sort_order=desc&per_page={limit}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    tickets = result.get("tickets", [])
-
-                    if not tickets:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No recent tickets found for contact ID: {contact_id}",
-                            )
-                        ]
-
-                    # Filter custom fields to only include those with view permission
-                    filtered_custom_fields = []
-                    ticket_list = []
-
-                    for ticket in tickets:
-                        # Process custom fields for this ticket
-                        filtered_custom_fields = []
-                        raw_custom_fields = ticket.get("custom_fields", [])
-                        for field in raw_custom_fields:
-                            if (
-                                isinstance(field, dict)
-                                and "id" in field
-                                and "value" in field
-                            ):
-                                field_id = field["id"]
-                                field_value = field["value"]
-                                if has_view_permission(custom_fields, field_id):
-                                    field_title = field.get("title", "")
-                                    filtered_custom_fields.append(
-                                        {
-                                            "id": field_id,
-                                            "value": field_value,
-                                            "title": field_title,
-                                        }
-                                    )
-
-                        ticket_data = {
-                            "id": str(ticket.get("id")),
-                            "contact_id": contact_id,
-                            "subject": ticket.get("subject", ""),
-                            "description": ticket.get("description", ""),
-                            "status": ticket.get("status", ""),
-                            "priority": ticket.get("priority", ""),
-                            "type": ticket.get("type", ""),
-                            "created_at": ticket.get("created_at", ""),
-                            "updated_at": ticket.get("updated_at", ""),
-                            "tags": ticket.get("tags", []),
-                            "url": ticket.get("url", ""),
-                            "custom_fields": filtered_custom_fields,
-                        }
-
-                        ticket_list.append(ticket_data)
-
-                    response_data = {"tickets": ticket_list}
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting recent tickets: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting recent tickets: {str(e)}",
-                        )
-                    ]
-
+                response_result = await get_recent_tickets(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "get_recent_tickets_by_email":
-                if "email" not in arguments:
-                    raise ValueError("Missing required parameter: email")
-
-                email = arguments["email"]
-                limit = arguments.get("limit", 10)
-
-                try:
-                    # First, get the user ID by email
-                    user_search_result = await make_zendesk_request(
-                        "get",
-                        f"users/search.json?query={email}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    users = user_search_result.get("users", [])
-
-                    if not users:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No user found with email: {email}",
-                            )
-                        ]
-
-                    # Use the first matching user
-                    user_id = users[0]["id"]
-
-                    # Get tickets for this user
-                    result = await make_zendesk_request(
-                        "get",
-                        f"users/{user_id}/tickets/requested.json?sort_by=updated_at&sort_order=desc&per_page={limit}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    tickets = result.get("tickets", [])
-
-                    if not tickets:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No recent tickets found for email: {email}",
-                            )
-                        ]
-
-                    # Filter custom fields to only include those with view permission
-                    ticket_list = []
-
-                    for ticket in tickets:
-                        # Process custom fields for this ticket
-                        filtered_custom_fields = []
-                        raw_custom_fields = ticket.get("custom_fields", [])
-                        for field in raw_custom_fields:
-                            if (
-                                isinstance(field, dict)
-                                and "id" in field
-                                and "value" in field
-                            ):
-                                field_id = field["id"]
-                                field_value = field["value"]
-                                if has_view_permission(custom_fields, field_id):
-                                    field_title = field.get("title", "")
-                                    filtered_custom_fields.append(
-                                        {
-                                            "id": field_id,
-                                            "value": field_value,
-                                            "title": field_title,
-                                        }
-                                    )
-
-                        ticket_data = {
-                            "id": str(ticket.get("id")),
-                            "contact_id": str(user_id),
-                            "subject": ticket.get("subject", ""),
-                            "description": ticket.get("description", ""),
-                            "status": ticket.get("status", ""),
-                            "priority": ticket.get("priority", ""),
-                            "type": ticket.get("type", ""),
-                            "created_at": ticket.get("created_at", ""),
-                            "updated_at": ticket.get("updated_at", ""),
-                            "tags": ticket.get("tags", []),
-                            "url": ticket.get("url", ""),
-                            "custom_fields": filtered_custom_fields,
-                        }
-
-                        ticket_list.append(ticket_data)
-
-                    response_data = {"tickets": ticket_list}
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting recent tickets by email: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting recent tickets by email: {str(e)}",
-                        )
-                    ]
-
+                response_result = await get_recent_tickets_by_email(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "get_recent_tickets_by_phone_number":
-                if "phone_number" not in arguments:
-                    raise ValueError("Missing required parameter: phone_number")
-
-                phone_number = arguments["phone_number"]
-                limit = arguments.get("limit", 10)
-
-                try:
-                    # First, get the user ID by phone number
-                    user_search_result = await make_zendesk_request(
-                        "get",
-                        f"users/search.json?query={phone_number}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    users = user_search_result.get("users", [])
-
-                    if not users:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No user found with phone number: {phone_number}",
-                            )
-                        ]
-
-                    # Use the first matching user
-                    user_id = users[0]["id"]
-
-                    # Get tickets for this user
-                    result = await make_zendesk_request(
-                        "get",
-                        f"users/{user_id}/tickets/requested.json?sort_by=updated_at&sort_order=desc&per_page={limit}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    tickets = result.get("tickets", [])
-
-                    if not tickets:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No recent tickets found for phone number: {phone_number}",
-                            )
-                        ]
-
-                    # Filter custom fields to only include those with view permission
-                    ticket_list = []
-
-                    for ticket in tickets:
-                        # Process custom fields for this ticket
-                        filtered_custom_fields = []
-                        raw_custom_fields = ticket.get("custom_fields", [])
-                        for field in raw_custom_fields:
-                            if (
-                                isinstance(field, dict)
-                                and "id" in field
-                                and "value" in field
-                            ):
-                                field_id = field["id"]
-                                field_value = field["value"]
-                                if has_view_permission(custom_fields, field_id):
-                                    field_title = field.get("title", "")
-                                    filtered_custom_fields.append(
-                                        {
-                                            "id": field_id,
-                                            "value": field_value,
-                                            "title": field_title,
-                                        }
-                                    )
-
-                        ticket_data = {
-                            "id": str(ticket.get("id")),
-                            "contact_id": str(user_id),
-                            "subject": ticket.get("subject", ""),
-                            "description": ticket.get("description", ""),
-                            "status": ticket.get("status", ""),
-                            "priority": ticket.get("priority", ""),
-                            "type": ticket.get("type", ""),
-                            "created_at": ticket.get("created_at", ""),
-                            "updated_at": ticket.get("updated_at", ""),
-                            "tags": ticket.get("tags", []),
-                            "url": ticket.get("url", ""),
-                            "custom_fields": filtered_custom_fields,
-                        }
-
-                        ticket_list.append(ticket_data)
-
-                    response_data = {"tickets": ticket_list}
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(
-                        f"Error getting recent tickets by phone number: {str(e)}"
-                    )
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting recent tickets by phone number: {str(e)}",
-                        )
-                    ]
-
+                response_result = await get_recent_tickets_by_phone_number(
+                    access_token, subdomain, custom_fields, arguments
+                )
             elif name == "create_user":
-                if "name" not in arguments:
-                    raise ValueError("Missing required parameter: name")
-
-                # Build user data
-                user_data = {
-                    "user": {
-                        "name": arguments["name"],
-                        "role": "end-user",
-                    }
+                response_result = await create_user(access_token, subdomain, arguments)
+            elif name == "get_contact_by_email":
+                response_result = await get_contact_by_email(
+                    access_token, subdomain, arguments
+                )
+            elif name == "get_contact_by_phone_number":
+                response_result = await get_contact_by_phone_number(
+                    access_token, subdomain, arguments
+                )
+            elif name == "get_contact_by_id":
+                response_result = await get_contact_by_id(
+                    access_token, subdomain, arguments
+                )
+            elif name == "get_ticket_fields":
+                response_result = await get_ticket_fields(
+                    access_token, subdomain, custom_fields, arguments
+                )
+            else:
+                response_result = {
+                    "success": False,
+                    "data": None,
+                    "error": f"Unknown tool: {name}",
                 }
 
-                # Add optional fields
-                if "email" in arguments:
-                    user_data["user"]["email"] = arguments["email"]
-                if "phone_number" in arguments:
-                    user_data["user"]["phone"] = arguments["phone_number"]
-
-                try:
-                    result = await make_zendesk_request(
-                        "post", "users.json", access_token, subdomain, data=user_data
-                    )
-
-                    user = result.get("user", {})
-
-                    if user:
-                        response_data = {
-                            "id": str(user.get("id")),
-                            "name": user.get("name", ""),
-                            "email": user.get("email", ""),
-                            "phone_number": user.get("phone", ""),
-                        }
-
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Success: {json.dumps(response_data, indent=2)}",
-                            )
-                        ]
-                    else:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: Failed to create user: {json.dumps(result, indent=2)}",
-                            )
-                        ]
-
-                except Exception as e:
-                    logger.error(f"Error creating user: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text", text=f"Failure: Error creating user: {str(e)}"
-                        )
-                    ]
-
-            elif name == "get_contact_by_email":
-                if "email" not in arguments:
-                    raise ValueError("Missing required parameter: email")
-
-                email = arguments["email"]
-
-                try:
-                    result = await make_zendesk_request(
-                        "get",
-                        f"users/search.json?query={email}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    users = result.get("users", [])
-
-                    if not users:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No user found with email: {email}",
-                            )
-                        ]
-
-                    # Use the first matching user
-                    user = users[0]
-
-                    response_data = {
-                        "id": str(user.get("id")),
-                        "name": user.get("name", ""),
-                        "email": user.get("email", ""),
-                        "phone_number": user.get("phone", ""),
-                    }
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting contact by email: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting contact by email: {str(e)}",
-                        )
-                    ]
-
-            elif name == "get_contact_by_phone_number":
-                if "phone_number" not in arguments:
-                    raise ValueError("Missing required parameter: phone_number")
-
-                phone_number = arguments["phone_number"]
-
-                try:
-                    result = await make_zendesk_request(
-                        "get",
-                        f"users/search.json?query={phone_number}",
-                        access_token,
-                        subdomain,
-                    )
-
-                    users = result.get("users", [])
-
-                    if not users:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No user found with phone number: {phone_number}",
-                            )
-                        ]
-
-                    # Use the first matching user
-                    user = users[0]
-
-                    response_data = {
-                        "id": str(user.get("id")),
-                        "name": user.get("name", ""),
-                        "email": user.get("email", ""),
-                        "phone_number": user.get("phone", ""),
-                    }
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting contact by phone number: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting contact by phone number: {str(e)}",
-                        )
-                    ]
-
-            elif name == "get_contact_by_id":
-                if "id" not in arguments:
-                    raise ValueError("Missing required parameter: id")
-
-                user_id = arguments["id"]
-
-                try:
-                    result = await make_zendesk_request(
-                        "get", f"users/{user_id}.json", access_token, subdomain
-                    )
-
-                    user = result.get("user", {})
-
-                    if not user:
-                        return [
-                            TextContent(
-                                type="text",
-                                text=f"Failure: No user found with ID: {user_id}",
-                            )
-                        ]
-
-                    response_data = {
-                        "id": str(user.get("id")),
-                        "name": user.get("name", ""),
-                        "email": user.get("email", ""),
-                        "phone_number": user.get("phone", ""),
-                    }
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting contact by ID: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting contact by ID: {str(e)}",
-                        )
-                    ]
-
-            elif name == "get_ticket_fields":
-                try:
-                    # Get all ticket fields from Zendesk
-                    result = await make_zendesk_request(
-                        "get", "ticket_fields.json", access_token, subdomain
-                    )
-
-                    ticket_fields = result.get("ticket_fields", [])
-
-                    if not ticket_fields:
-                        return [
-                            TextContent(
-                                type="text",
-                                text="Failure: No ticket fields found.",
-                            )
-                        ]
-
-                    # Filter to include only custom fields that are active, in the config, and have view permission
-                    filtered_custom_fields = []
-                    for field in ticket_fields:
-                        if isinstance(field, dict) and "id" in field:
-                            field_id = field["id"]
-                            # Include field if it's active, removable, and has view permission
-                            if (
-                                field.get("active", False)
-                                and field.get("removable", False)
-                                and has_view_permission(custom_fields, field_id)
-                            ):
-                                # Add permission info
-                                field_data = {
-                                    "id": field_id,
-                                    "title": field.get("title", ""),
-                                    "type": field.get("type", ""),
-                                    "description": field.get("description", ""),
-                                    "required": field.get("required", False),
-                                    "options": field.get("custom_field_options", []),
-                                }
-
-                                # Add permission info if field is in config
-                                if str(field_id) in custom_fields:
-                                    field_config = custom_fields[str(field_id)]
-                                    field_data["can_view"] = field_config.get(
-                                        "view", False
-                                    )
-                                    field_data["can_edit"] = field_config.get(
-                                        "edit", False
-                                    )
-                                    field_data["can_create"] = field_config.get(
-                                        "create", False
-                                    )
-
-                                filtered_custom_fields.append(field_data)
-
-                    response_data = {"custom_fields": filtered_custom_fields}
-
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Success: {json.dumps(response_data, indent=2)}",
-                        )
-                    ]
-
-                except Exception as e:
-                    logger.error(f"Error getting ticket fields: {str(e)}")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failure: Error getting ticket fields: {str(e)}",
-                        )
-                    ]
-
-            raise ValueError(f"Unknown tool: {name}")
+            return [
+                TextContent(type="text", text=json.dumps(response_result, indent=2))
+            ]
 
         except Exception as e:
             logger.error(f"Error executing tool {name}: {str(e)}")
-            return [TextContent(type="text", text=f"Failure: {str(e)}")]
+            error_result: ToolResponse = {
+                "success": False,
+                "data": None,
+                "error": str(e),
+            }
+            return [TextContent(type="text", text=json.dumps(error_result, indent=2))]
 
     return server
 

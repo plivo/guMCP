@@ -1,4 +1,4 @@
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 
 class CustomFieldConfig(TypedDict):
@@ -32,3 +32,9 @@ def has_create_permission(custom_fields: CustomFields, field_id) -> bool:
         return False  # Not in config, so no permission
     field_config = cast(CustomFieldConfig, custom_fields.get(str(field_id), {}))
     return field_config.get("create", False)
+
+
+class ToolResponse(TypedDict):
+    success: bool
+    data: Any
+    error: Any
