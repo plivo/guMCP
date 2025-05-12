@@ -1,9 +1,9 @@
 import logging
-import time
 import os
-from typing import Dict, List, Any, Optional, Tuple
+import time
+from typing import Any, Dict, List, Optional
 
-from src.utils.oauth.util import run_oauth_flow, refresh_token_if_needed
+from src.utils.oauth.util import refresh_token_if_needed, run_oauth_flow
 
 # Zendesk OAuth endpoints
 # These will be formatted with the Zendesk subdomain from config
@@ -176,7 +176,10 @@ async def get_service_config(
     if environment != "local":
         credentials = auth_client.get_user_credentials(service_name, user_id)
         if isinstance(credentials, dict) and "custom_subdomain" in credentials:
-            return {"custom_subdomain": credentials["custom_subdomain"]}
+            return {
+                "custom_subdomain": credentials["custom_subdomain"],
+                "custom_fields": credentials.get("custom_fields", {}),
+            }
 
     # For local environment or as fallback, get from OAuth config
     try:
