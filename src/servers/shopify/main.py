@@ -43,6 +43,7 @@ from src.utils.shopify.graphql_schemas import (
     VARIANT_INVENTORY_ITEM_GRAPHQL_QUERY,
 )
 from src.utils.shopify.util import get_credentials, get_service_config
+from src.utils.utils import ToolResponse
 
 SERVICE_NAME = Path(__file__).parent.name
 
@@ -98,6 +99,17 @@ async def execute_graphql_query(user_id, query, variables=None, api_key=None):
             result["text"] = response.text
 
         return result
+
+
+def extract_node_data(response: dict[str, Any]):
+    """
+    Simply returns the data from the response without any transformations
+    """
+
+    if not response or "data" not in response:
+        return None
+
+    return response.get("data")
 
 
 async def calculate_refund(variables: Dict[str, Any]):
@@ -579,6 +591,42 @@ def create_server(user_id, api_key=None):
                 },
             ),
             Tool(
+                name="get_orders_by_phone_number",
+                description="Retrieves orders associated with a specific phone number. First finds a customer by phone number, then retrieves their orders. Returns customer details along with orders or appropriate error messages if no customer is found.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "phone": {
+                            "type": "string",
+                            "description": "Phone number to search for customer (include country code for best results)",
+                        },
+                        "first": {
+                            "type": "integer",
+                            "description": "Maximum number of orders to retrieve (defaults to 10)",
+                        },
+                    },
+                    "required": ["phone"],
+                },
+            ),
+            Tool(
+                name="get_orders_by_email",
+                description="Retrieves orders associated with a specific email address. First finds a customer by email, then retrieves their orders. Returns customer details along with orders or appropriate error messages if no customer is found.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "email": {
+                            "type": "string",
+                            "description": "Email address to search for customer",
+                        },
+                        "first": {
+                            "type": "integer",
+                            "description": "Maximum number of orders to retrieve (defaults to 10)",
+                        },
+                    },
+                    "required": ["email"],
+                },
+            ),
+            Tool(
                 name="get_locations",
                 description="Retrieves a list of locations from the Shopify store",
                 inputSchema={
@@ -802,6 +850,24 @@ def create_server(user_id, api_key=None):
                     "limit": args["limit"],
                 },
             },
+            "get_orders_by_phone_number": {
+                "fn": get_orders_by_phone,
+                "variables": lambda args: {
+                    "user_id": server.user_id,
+                    "phone_number": args["phone"],
+                    "first": args.get("first", 10),
+                    "api_key": server.api_key,
+                },
+            },
+            "get_orders_by_email": {
+                "fn": get_orders_by_email,
+                "variables": lambda args: {
+                    "user_id": server.user_id,
+                    "email": args["email"],
+                    "first": args.get("first", 10),
+                    "api_key": server.api_key,
+                },
+            },
             "get_locations": {
                 "query": LOCATIONS_GRAPHQL_QUERY,
                 "variables": lambda args: {
@@ -888,27 +954,30 @@ def create_server(user_id, api_key=None):
                         else fn(variables)
                     )
 
-                if (
-                    result.get("_status_code") >= 200
-                    and result.get("_status_code") < 300
-                ):
+                if "errors" not in result:
+                    response = ToolResponse(
+                        success=True,
+                        data=extract_node_data(result),
+                        error=None,
+                    )
                     return [
-                        TextContent(
-                            type="text", text=f"Success: {json.dumps(result, indent=2)}"
-                        )
+                        TextContent(type="text", text=json.dumps(response, indent=2))
                     ]
                 else:
+                    response = ToolResponse(
+                        success=False, data=None, error=result.get("errors")
+                    )
                     return [
-                        TextContent(
-                            type="text", text=f"Error: {json.dumps(result, indent=2)}"
-                        )
+                        TextContent(type="text", text=json.dumps(response, indent=2))
                     ]
             except Exception as e:
-                return [
-                    TextContent(type="text", text=f"Error executing {name}: {str(e)}")
-                ]
+                response = ToolResponse(success=False, data=None, error=str(e))
+                return [TextContent(type="text", text=json.dumps(response, indent=2))]
 
-        return [TextContent(type="text", text=f"Tool '{name}' is not yet implemented.")]
+        response = ToolResponse(
+            success=False, data=None, error=f"Tool '{name}' is not yet implemented."
+        )
+        return [TextContent(type="text", text=json.dumps(response, indent=2))]
 
     return server
 
@@ -924,6 +993,126 @@ def get_initialization_options(server_instance: Server) -> InitializationOptions
             notification_options=NotificationOptions(),
             experimental_capabilities={},
         ),
+    )
+
+
+async def get_orders_by_email(variables: Dict[str, Any]):
+    """
+    Get orders for a customer identified by email.
+    First finds the customer by email, then retrieves their orders.
+    """
+    user_id = variables["user_id"]
+    email = variables["email"]
+    first = variables.get("first", 10)
+    api_key = variables["api_key"]
+
+    # First find the customer by email
+    customer_result = await execute_graphql_query(
+        user_id,
+        GET_CONTACT_BY_EMAIL_GRAPHQL_QUERY,
+        variables={"email": email},
+        api_key=api_key,
+    )
+
+    # Handle API errors
+    if customer_result.get("_status_code", 0) != 200 or "errors" in customer_result:
+        errors = customer_result.get("errors", [{"message": "Unknown error occurred"}])
+        return {
+            "_status_code": customer_result.get("_status_code", 500),
+            "errors": errors,
+        }
+
+    # Handle case where data structure is unexpected
+    if "data" not in customer_result or "customers" not in customer_result["data"]:
+        return {
+            "_status_code": 500,
+            "errors": [{"message": "Unexpected API response structure"}],
+        }
+
+    # Handle no customers found
+    customer_edges = customer_result["data"]["customers"]["edges"]
+    if not customer_edges:
+        return {
+            "_status_code": 404,
+            "errors": [{"message": f"No customer found with email: {email}"}],
+        }
+
+    # Extract customer ID
+    try:
+        customer = customer_edges[0]["node"]
+        customer_id = customer["id"]
+    except (KeyError, IndexError) as e:
+        return {
+            "_status_code": 500,
+            "errors": [{"message": f"Error parsing customer data: {str(e)}"}],
+        }
+
+    # Now get orders for this customer
+    return await execute_graphql_query(
+        user_id,
+        GET_RECENT_ORDERS_GRAPHQL_QUERY,
+        variables={"customerId": customer_id, "limit": first},
+        api_key=api_key,
+    )
+
+
+async def get_orders_by_phone(variables: Dict[str, Any]):
+    """
+    Get orders for a customer identified by phone number.
+    First finds the customer by phone, then retrieves their orders.
+    """
+    user_id = variables["user_id"]
+    phone_number = variables["phone_number"]
+    first = variables.get("first", 10)
+    api_key = variables["api_key"]
+
+    # First find the customer by phone
+    customer_result = await execute_graphql_query(
+        user_id,
+        GET_CONTACT_BY_PHONE_GRAPHQL_QUERY,
+        variables={"phone": phone_number},
+        api_key=api_key,
+    )
+
+    # Handle API errors
+    if customer_result.get("_status_code", 0) != 200 or "errors" in customer_result:
+        errors = customer_result.get("errors", [{"message": "Unknown error occurred"}])
+        return {
+            "_status_code": customer_result.get("_status_code", 500),
+            "errors": errors,
+        }
+
+    # Handle case where data structure is unexpected
+    if "data" not in customer_result or "customers" not in customer_result["data"]:
+        return {
+            "_status_code": 500,
+            "errors": [{"message": "Unexpected API response structure"}],
+        }
+
+    # Handle no customers found
+    customer_edges = customer_result["data"]["customers"]["edges"]
+    if not customer_edges:
+        return {
+            "_status_code": 404,
+            "errors": [{"message": f"No customer found with phone: {phone_number}"}],
+        }
+
+    # Extract customer ID
+    try:
+        customer = customer_edges[0]["node"]
+        customer_id = customer["id"]
+    except (KeyError, IndexError) as e:
+        return {
+            "_status_code": 500,
+            "errors": [{"message": f"Error parsing customer data: {str(e)}"}],
+        }
+
+    # Now get orders for this customer
+    return await execute_graphql_query(
+        user_id,
+        GET_RECENT_ORDERS_GRAPHQL_QUERY,
+        variables={"customerId": customer_id, "limit": first},
+        api_key=api_key,
     )
 
 
