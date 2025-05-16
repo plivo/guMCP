@@ -1,0 +1,6 @@
+---
+parent: plivo
+serviceName: mcp-service
+language: python
+org: plivo
+dockerOnly: true

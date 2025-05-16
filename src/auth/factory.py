@@ -1,6 +1,6 @@
-import os
 import logging
-from typing import Optional, TypeVar, Type
+import os
+from typing import Optional, Type, TypeVar
 
 from .clients.BaseAuthClient import BaseAuthClient
 
@@ -32,6 +32,10 @@ def create_auth_client(
         from .clients.GumloopAuthClient import GumloopAuthClient
 
         return GumloopAuthClient(api_key=api_key)
+    elif environment == "plivo":
+        from .clients.PlivoAuthClient import PlivoAuthClient
+
+        return PlivoAuthClient()
 
     # Default to local file auth client
     from .clients.LocalAuthClient import LocalAuthClient
