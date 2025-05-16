@@ -13,7 +13,7 @@ sed -i -e 's/<REGION>/'"$REGION"'/g' /home/plivo/env.ctmpl
 echo "Getting config from consul..."
 /usr/sbin/consul-template \
     -consul-addr "$CONSUL" \
-    -template "/home/plivo/config/env_files/env.ctmpl:/home/plivo/.env" \
+    -template "/home/plivo/env.ctmpl:/home/plivo/.env" \
     -once
 status="$?"
 echo "Exit status after getting env: $status"
