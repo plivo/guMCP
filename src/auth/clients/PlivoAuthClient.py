@@ -6,7 +6,7 @@ import requests
 
 from .BaseAuthClient import BaseAuthClient, CredentialsT
 
-logger = logging.getLogger("gumloop-auth-client")
+logger = logging.getLogger("plivo-auth-client")
 
 
 class PlivoAuthClient(BaseAuthClient[CredentialsT]):
