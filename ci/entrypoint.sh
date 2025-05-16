@@ -24,4 +24,4 @@ then
 fi
 
 echo "Starting uvicorn server"
-env $(cat /home/plivo/.env | grep -v '^#' | xargs) python src/server/main.py
+env $(cat /home/plivo/.env | grep -v '^#' | xargs) python src/servers/main.py
