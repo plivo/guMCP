@@ -5,7 +5,7 @@ import time
 
 @pytest.mark.asyncio
 async def test_list_resources(client):
-    """Test listing resources from Intercom (tags, conversations, contacts)"""
+    """Test listing resources from Intercom (conversations)"""
     response = await client.list_resources()
     assert (
         response and hasattr(response, "resources") and len(response.resources)
@@ -16,35 +16,6 @@ async def test_list_resources(client):
         print(f"  - {resource.name} ({resource.uri}) - Type: {resource.mimeType}")
 
     print("✅ Successfully listed resources")
-
-
-@pytest.mark.asyncio
-async def test_read_contact(client):
-    """Test reading a contact resource"""
-    response = await client.list_resources()
-    assert (
-        response and hasattr(response, "resources") and len(response.resources)
-    ), f"Invalid list resources response: {response}"
-
-    contact_resource = next(
-        (r for r in response.resources if str(r.uri).startswith("intercom://contact/")),
-        None,
-    )
-
-    if not contact_resource:
-        print("No contact resources found, skipping test")
-        return
-
-    response = await client.read_resource(contact_resource.uri)
-    assert response.contents, "Response should contain contact data"
-    assert response.contents[0].mimeType == "application/json", "Expected JSON response"
-
-    # Verify we have the expected contact data structure
-    content_text = response.contents[0].text
-    assert (
-        "type" in content_text and "id" in content_text
-    ), "Response should contain contact data fields"
-    assert "email" in content_text, "Response should include contact email"
 
 
 @pytest.mark.asyncio
@@ -84,39 +55,6 @@ async def test_read_conversation(client):
         "conversation_parts" in content_text
     ), "Response should include conversation parts"
     print("✅ Successfully read conversation data")
-
-
-@pytest.mark.asyncio
-async def test_read_tag(client):
-    """Test reading a tag resource"""
-    response = await client.list_resources()
-    assert (
-        response and hasattr(response, "resources") and len(response.resources)
-    ), f"Invalid list resources response: {response}"
-
-    tag_resource = next(
-        (r for r in response.resources if str(r.uri).startswith("intercom:///tag/")),
-        None,
-    )
-
-    if not tag_resource:
-        print("No tag resources found, skipping test")
-        return
-
-    response = await client.read_resource(tag_resource.uri)
-    assert response.contents, "Response should contain tag data"
-    assert response.contents[0].mimeType == "application/json", "Expected JSON response"
-
-    print("Tag data read:")
-    print(f"\t{response.contents[0].text}")
-
-    # Verify we have the expected tag data structure
-    content_text = response.contents[0].text
-    assert (
-        "type" in content_text and "id" in content_text
-    ), "Response should contain tag data fields"
-    assert "name" in content_text, "Response should include tag name"
-    print("✅ Successfully read tag data")
 
 
 @pytest.mark.asyncio

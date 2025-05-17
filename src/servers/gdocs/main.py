@@ -155,6 +155,35 @@ def create_server(user_id, api_key=None):
                     },
                     "required": ["query"],
                 },
+                requiredScopes=["https://www.googleapis.com/auth/drive.file"],
+                outputSchema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Search results showing documents that match the query, with their titles, URIs, and modification dates",
+                    "examples": [
+                        "Found 10 Google Docs matching 'test':\nGumloop basics (URI: gdocs://document/abc123, Modified: 2025-05-08T21:44:04.696Z)\nMe at the zoo (URI: gdocs://document/def456, Modified: 2025-05-10T01:45:06.753Z)\nMy YouTube Video Blog Post (URI: gdocs://document/ghi789, Modified: 2025-05-10T02:06:32.640Z)"
+                    ],
+                },
+            ),
+            Tool(
+                name="read_doc",
+                description="Read content from a Google Doc",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "doc_id": {"type": "string", "description": "Document ID"},
+                    },
+                    "required": ["doc_id"],
+                },
+                requiredScopes=["https://www.googleapis.com/auth/documents"],
+                outputSchema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Raw document structure from the Google Docs API",
+                    "examples": [
+                        "{'body': {'content': [{'paragraph': {'elements': [{'textRun': {'content': 'Document title\\n', 'textStyle': {}}}], 'paragraphStyle': {}}}, {'paragraph': {'elements': [{'textRun': {'content': 'Document content with formatting...', 'textStyle': {}}}], 'paragraphStyle': {}}}]}}"
+                    ],
+                },
             ),
             Tool(
                 name="create_doc",
@@ -169,6 +198,18 @@ def create_server(user_id, api_key=None):
                         },
                     },
                     "required": ["title", "content"],
+                },
+                requiredScopes=[
+                    "https://www.googleapis.com/auth/drive.file",
+                    "https://www.googleapis.com/auth/documents",
+                ],
+                outputSchema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Confirmation of document creation with the new document's title, URI, and web link",
+                    "examples": [
+                        "Created new Google Doc 'Test Document'\nResource URI: gdocs://document/abc123\nDocument link: https://docs.google.com/document/d/abc123/edit"
+                    ],
                 },
             ),
             Tool(
@@ -185,6 +226,15 @@ def create_server(user_id, api_key=None):
                     },
                     "required": ["doc_id", "content"],
                 },
+                requiredScopes=["https://www.googleapis.com/auth/documents"],
+                outputSchema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Confirmation of content append operation with the document's URI and web link",
+                    "examples": [
+                        "Successfully appended content to Google Doc\nResource URI: gdocs://document/abc123\nDocument link: https://docs.google.com/document/d/abc123/edit"
+                    ],
+                },
             ),
             Tool(
                 name="update_doc",
@@ -199,6 +249,15 @@ def create_server(user_id, api_key=None):
                         },
                     },
                     "required": ["doc_id", "content"],
+                },
+                requiredScopes=["https://www.googleapis.com/auth/documents"],
+                outputSchema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Confirmation of document update with the document's URI and web link",
+                    "examples": [
+                        "Successfully updated Google Doc\nResource URI: gdocs://document/abc123\nDocument link: https://docs.google.com/document/d/abc123/edit"
+                    ],
                 },
             ),
         ]
@@ -248,6 +307,26 @@ def create_server(user_id, api_key=None):
                     text=f"Found {len(files)} Google Docs matching '{user_query}':\n{file_list}",
                 )
             ]
+
+        elif name == "read_doc":
+            if not arguments or "doc_id" not in arguments:
+                raise ValueError("Missing required parameter: doc_id")
+
+            doc_id = arguments["doc_id"]
+
+            docs_service = await create_docs_service(
+                server.user_id, api_key=server.api_key
+            )
+
+            # Get the document content
+            document = (
+                docs_service.documents()
+                .get(documentId=doc_id, fields="body/content")
+                .execute()
+            )
+
+            # Return raw document content
+            return [TextContent(type="text", text=str(document))]
 
         elif name == "create_doc":
             if not arguments or "title" not in arguments or "content" not in arguments:

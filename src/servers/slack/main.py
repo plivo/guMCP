@@ -273,6 +273,14 @@ def create_server(user_id, api_key=None):
                             "type": "integer",
                             "description": "Maximum number of messages to return (default: 20)",
                         },
+                        "start_timestamp": {
+                            "type": "string",
+                            "description": "Start of time range: timestamp in epoch seconds (e.g. 1234567890.123456)",
+                        },
+                        "end_timestamp": {
+                            "type": "string",
+                            "description": "End of time range: timestamp in epoch seconds (e.g. 1234567890.123456)",
+                        },
                     },
                     "required": ["channel"],
                 },
@@ -311,9 +319,9 @@ def create_server(user_id, api_key=None):
                 outputSchema={
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Array of JSON string containing response of the message send operation",
+                    "description": "JSON string containing response of the message send operation with status, timestamp and message details",
                     "examples": [
-                        '[{"status":"success","channel":"C12345","ts":"1234567890.123456","message":{"user":"U12345","type":"message","ts":"1234567890.123456","text":"This is a test message","team":"T12345"}}]'
+                        '{\n  "status": "success",\n  "error": null,\n  "channel": "C12345",\n  "ts": "1234567890.123456",\n  "message": {\n    "user": "U12345",\n    "type": "message",\n    "ts": "1234567890.123456",\n    "text": "This is a test message",\n    "team": "T12345"\n  }\n}'
                     ],
                 },
                 requiredScopes=["chat:write", "chat:write.customize"],
@@ -542,43 +550,16 @@ def create_server(user_id, api_key=None):
                 requiredScopes=["users:read"],
             ),
             Tool(
-                name="invite_to_channel",
-                description="Invite users to a channel",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "channel": {
-                            "type": "string",
-                            "description": "Channel ID or name to invite users to",
-                        },
-                        "users": {
-                            "type": "string",
-                            "description": "Comma-separated list of user IDs to invite",
-                        },
-                    },
-                    "required": ["channel", "users"],
-                },
-                outputSchema={
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Array of JSON string containing response of invitation operation",
-                    "examples": [
-                        '{"ok": true, "channel": {"id": "C12345", "name": "general", "is_channel": true, "is_group": false, "is_private": false, "created": 1234567890, "creator": "U12345", "team_id": "T12345"}}'
-                    ],
-                },
-                requiredScopes=["channels:manage", "groups:write"],
-            ),
-            Tool(
                 name="remove_from_channel",
                 description="Remove a user from a channel",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "channel": {
+                        "channel_id": {
                             "type": "string",
                             "description": "Channel ID or name to remove user from",
                         },
-                        "user": {
+                        "user_id": {
                             "type": "string",
                             "description": "User ID to remove from channel",
                         },
@@ -743,6 +724,30 @@ def create_server(user_id, api_key=None):
                 },
                 requiredScopes=["channels:manage", "groups:write"],
             ),
+            Tool(
+                name="list_users_in_channel",
+                description="List all users in a Slack channel",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "channel": {
+                            "type": "string",
+                            "description": "Slack channel ID or name (with # for names)",
+                        }
+                    },
+                    "required": ["channel"],
+                },
+                outputSchema={
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Detailed information about each user in the channel. Each item contains user ID, name, real name, display name, email, admin status, owner status, bot status, last updated timestamp, and presence status.",
+                    "examples": [
+                        '{\n  "id": "U12345ABCDE",\n  "name": "username",\n  "real_name": "User Full Name",\n  "display_name": "Display Name",\n  "email": "user@example.com",\n  "is_admin": false,\n  "is_owner": false,\n  "is_bot": false,\n  "updated": 1234567890,\n  "presence": "active"\n}',
+                        '{\n  "id": "U67890FGHIJ",\n  "name": "botuser",\n  "real_name": "Bot User",\n  "display_name": "",\n  "email": null,\n  "is_admin": false,\n  "is_owner": false,\n  "is_bot": true,\n  "updated": 1234567890,\n  "presence": "away"\n}',
+                    ],
+                },
+                requiredScopes=["channels:read", "groups:read", "users:read"],
+            ),
         ]
 
     @server.call_tool()
@@ -775,7 +780,10 @@ def create_server(user_id, api_key=None):
         tool_config = {
             "read_messages": {
                 "handler": lambda args: slack_client.conversations_history(
-                    channel=args["resolved_channel"], limit=args.get("limit", 20)
+                    channel=args["resolved_channel"],
+                    limit=args.get("limit", 20),
+                    oldest=args.get("oldest"),
+                    latest=args.get("latest"),
                 ),
                 "preprocess": lambda args: {
                     "resolved_channel": (
@@ -784,6 +792,8 @@ def create_server(user_id, api_key=None):
                         else args["channel"]
                     ),
                     "limit": args.get("limit", 20),
+                    "oldest": args.get("start_timestamp"),
+                    "latest": args.get("end_timestamp"),
                 },
                 "postprocess": lambda response: [
                     TextContent(type="text", text=json.dumps(message, indent=2))
@@ -809,14 +819,15 @@ def create_server(user_id, api_key=None):
                     TextContent(
                         type="text",
                         text=json.dumps(
-                            [
-                                {
-                                    "status": "success",
-                                    "channel": response["channel"],
-                                    "ts": response["ts"],
-                                    "message": response.get("message", {}),
-                                }
-                            ],
+                            {
+                                "status": (
+                                    "success" if response.get("ok", False) else "error"
+                                ),
+                                "error": response.get("error", None),
+                                "channel": response.get("channel", ""),
+                                "ts": response.get("ts", ""),
+                                "message": response.get("message", {}),
+                            },
                             indent=2,
                         ),
                     )
@@ -843,14 +854,15 @@ def create_server(user_id, api_key=None):
                     TextContent(
                         type="text",
                         text=json.dumps(
-                            [
-                                {
-                                    "status": "success",
-                                    "channel": response["channel"],
-                                    "ts": response["ts"],
-                                    "message": response.get("message", {}),
-                                }
-                            ],
+                            {
+                                "status": (
+                                    "success" if response.get("ok", False) else "error"
+                                ),
+                                "error": response.get("error", None),
+                                "channel": response.get("channel", ""),
+                                "ts": response.get("ts", ""),
+                                "message": response.get("message", {}),
+                            },
                             indent=2,
                         ),
                     )
@@ -997,19 +1009,6 @@ def create_server(user_id, api_key=None):
                     )
                 },
             },
-            "invite_to_channel": {
-                "handler": lambda args: slack_client.conversations_invite(
-                    channel=args["resolved_channel"], users=args["user_ids"]
-                ),
-                "preprocess": lambda args: {
-                    "resolved_channel": (
-                        get_channel_id_sync(slack_client, server, args["channel"])
-                        if args["channel"].startswith("#")
-                        else args["channel"]
-                    ),
-                    "user_ids": [u.strip() for u in args["users"].split(",")],
-                },
-            },
             "remove_from_channel": {
                 "handler": lambda args: slack_client.conversations_kick(
                     channel=args["resolved_channel"], user=args["resolved_user"]
@@ -1017,15 +1016,24 @@ def create_server(user_id, api_key=None):
                 "preprocess": lambda args: {
                     "resolved_channel": (
                         get_channel_id_sync(slack_client, server, args["channel"])
-                        if args["channel"].startswith("#")
-                        else args["channel"]
+                        if args.get("channel", "").startswith("#")
+                        else args.get("channel") or args.get("channel_id")
                     ),
                     "resolved_user": (
                         get_user_id_sync(slack_client, server, args["user"])
-                        if not args["user"].startswith("U")
-                        else args["user"]
+                        if args.get("user", "").startswith("U") is False
+                        else args.get("user") or args.get("user_id")
                     ),
                 },
+                "postprocess": lambda response: [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            response.data if hasattr(response, "data") else response,
+                            indent=2,
+                        ),
+                    )
+                ],
             },
             "create_channel": {
                 "handler": lambda args: slack_client.conversations_create(
@@ -1084,6 +1092,33 @@ def create_server(user_id, api_key=None):
                         else args["channel"]
                     )
                 },
+            },
+            "list_users_in_channel": {
+                "handler": lambda args: get_users_in_channel(
+                    slack_client, args["resolved_channel"]
+                ),
+                "preprocess": lambda args: {
+                    "resolved_channel": (
+                        get_channel_id_sync(slack_client, server, args["channel"])
+                        if args["channel"].startswith("#")
+                        else args["channel"]
+                    )
+                },
+                "postprocess": lambda response: (
+                    [
+                        TextContent(
+                            type="text",
+                            text=(
+                                json.dumps(item, indent=2)
+                                if isinstance(item, dict)
+                                else item
+                            ),
+                        )
+                        for item in response
+                    ]
+                    if isinstance(response, list)
+                    else [TextContent(type="text", text=json.dumps(response, indent=2))]
+                ),
             },
         }
 
@@ -1309,3 +1344,54 @@ def enrich_messages_sync(slack_client, messages):
         enriched_messages.append(enriched_message)
 
     return enriched_messages
+
+
+def get_users_in_channel(slack_client, channel_id):
+    """Get list of users in a channel with pagination support"""
+    users = []
+    cursor = None
+
+    while True:
+        if cursor:
+            response = slack_client.conversations_members(
+                channel=channel_id, cursor=cursor
+            )
+        else:
+            response = slack_client.conversations_members(channel=channel_id)
+
+        if response["ok"]:
+            users.extend(response["members"])
+
+        cursor = response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+    detailed_users = []
+    for user_id in users:
+        user_info = slack_client.users_info(user=user_id)
+        if user_info["ok"]:
+            user_data = user_info["user"]
+            # Extract relevant user details
+            detailed_user = {
+                "id": user_data.get("id"),
+                "name": user_data.get("name"),
+                "real_name": user_data.get("real_name"),
+                "display_name": user_data.get("profile", {}).get("display_name"),
+                "email": user_data.get("profile", {}).get("email"),
+                "is_admin": user_data.get("is_admin", False),
+                "is_owner": user_data.get("is_owner", False),
+                "is_bot": user_data.get("is_bot", False),
+                "updated": user_data.get("updated"),
+                "presence": None,  # Will be populated if requested
+            }
+
+            # Optionally get presence info
+            try:
+                presence_info = slack_client.users_getPresence(user=user_id)
+                if presence_info["ok"]:
+                    detailed_user["presence"] = presence_info.get("presence")
+            except:
+                pass  # Ignore presence errors
+
+            detailed_users.append(detailed_user)
+    return detailed_users

@@ -11,7 +11,7 @@ def random_id():
 
 # Shared context dictionary at module level
 SHARED_CONTEXT = {
-    "test_user_id": "",  # replace with the user ID of the user you want to test with
+    "test_user_id": "U08L3MC1PPA",  # replace with the user ID of the user you want to test with
 }
 
 TOOL_TESTS = [
@@ -26,7 +26,7 @@ TOOL_TESTS = [
         "setup": lambda context: {"random_id": random_id()},
     },
     {
-        "name": "invite_to_channel",
+        "name": "add_user_to_channel",
         "args_template": "to channel with ID {channel_id} users {test_user_id}",
         "expected_keywords": ["ok"],
         "regex_extractors": {
@@ -163,16 +163,6 @@ TOOL_TESTS = [
     },
     # add user to channel
     {
-        "name": "invite_to_channel",
-        "args_template": "to channel with ID {channel_id} users {test_user_id}",
-        "expected_keywords": ["ok"],
-        "regex_extractors": {
-            "ok": r"ok:\s*(true|yes)",
-        },
-        "description": "Invite user to the channel and return ok parameter from the response",
-        "depends_on": ["channel_id", "test_user_id"],
-    },
-    {
         "name": "archive_channel",
         "args_template": "channel with ID {channel_id}",
         "expected_keywords": ["ok"],
@@ -180,6 +170,16 @@ TOOL_TESTS = [
             "ok": r"ok:\s*(true|yes)",
         },
         "description": "Archive the created channel and return ok parameter from the response",
+        "depends_on": ["channel_id"],
+    },
+    {
+        "name": "list_users_in_channel",
+        "args_template": "in channel with ID {channel_id}",
+        "expected_keywords": ["user_count"],
+        "regex_extractors": {
+            "user_count": r"(?:user_count|users):\s*(\d+)",
+        },
+        "description": "List users in the channel and return the count of users",
         "depends_on": ["channel_id"],
     },
 ]
