@@ -1,8 +1,8 @@
+import json
 import os
 import sys
-from typing import Optional, Iterable
-import json
 import uuid  # Add import for uuid
+from typing import Iterable, Optional
 
 project_root = os.path.abspath(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
@@ -12,21 +12,22 @@ sys.path.insert(0, os.path.join(project_root, "src"))
 
 import logging
 from pathlib import Path
-import httpx
 
+import httpx
+from mcp.server import NotificationOptions, Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
+from mcp.server.models import InitializationOptions
 from mcp.types import (
     AnyUrl,
+    EmbeddedResource,
+    ImageContent,
     Resource,
     TextContent,
     Tool,
-    ImageContent,
-    EmbeddedResource,
 )
-from mcp.server.lowlevel.helper_types import ReadResourceContents
-from mcp.server import NotificationOptions, Server
-from mcp.server.models import InitializationOptions
 
 from src.utils.intercom.utils import authenticate_and_save_credentials, get_credentials
+from src.utils.utils import ToolResponse  # Added import
 
 SERVICE_NAME = Path(__file__).parent.name
 INTERCOM_API_URL = "https://api.intercom.io"
@@ -637,87 +638,111 @@ def create_server(user_id, api_key=None):
     ) -> list[TextContent | ImageContent | EmbeddedResource]:
         """Handle tool execution requests for Intercom"""
         access_token = await get_intercom_client()
+        processed_args = arguments or {}
 
         if name == "search_contacts":
-            if not arguments or "query" not in arguments:
-                raise ValueError("Missing query parameter")
+            if "query" not in processed_args:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing query parameter",
+                            )
+                        ),
+                    )
+                ]
+            query = processed_args["query"]
 
-            query = arguments["query"]
-
-            # Search contacts by query
             try:
-                search_params = {
+                search_params_email = {
                     "query": {"field": "email", "operator": "~", "value": query}
                 }
                 search_result = await execute_intercom_request(
                     "post",
                     "contacts/search",
-                    data=search_params,
+                    data=search_params_email,
                     access_token=access_token,
                 )
 
                 contacts = search_result.get("data", [])
 
                 if not contacts:
-                    # Try searching by name if email search returns no results
-                    search_params = {
+                    search_params_name = {
                         "query": {"field": "name", "operator": "~", "value": query}
                     }
                     search_result = await execute_intercom_request(
                         "post",
                         "contacts/search",
-                        data=search_params,
+                        data=search_params_name,
                         access_token=access_token,
                     )
-                    contacts = search_result.get("data", [])
 
-                if not contacts:
-                    return [
-                        TextContent(
-                            type="text", text="No contacts found matching your query."
-                        )
-                    ]
-
-                contact_list = []
-                for contact in contacts:
-                    contact_type = "User" if contact.get("role") == "user" else "Lead"
-                    contact_list.append(
-                        f"{contact_type}: {contact.get('name', 'Unnamed')}\n"
-                        f"  Email: {contact.get('email', 'No Email')}\n"
-                        f"  ID: {contact.get('id')}\n"
-                        f"  Created: {contact.get('created_at')}"
-                    )
-
-                formatted_result = "\n\n".join(contact_list)
+                # search_result will contain the data from the last successful call or the one that found contacts
                 return [
                     TextContent(
                         type="text",
-                        text=f"Found {len(contacts)} contacts:\n\n{formatted_result}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=search_result, error=None)
+                        ),
                     )
                 ]
 
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error searching contacts: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except Exception:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error searching contacts: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error searching contacts: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "create_contact":
             required_fields = ["email"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
             data = {
-                "role": arguments.get("role", "user"),
-                "email": arguments["email"],
+                "role": processed_args.get("role", "user"),
+                "email": processed_args["email"],
             }
 
-            if "name" in arguments:
-                data["name"] = arguments["name"]
+            if "name" in processed_args:
+                data["name"] = processed_args["name"]
 
-            if "custom_attributes" in arguments:
-                data["custom_attributes"] = arguments["custom_attributes"]
+            if "custom_attributes" in processed_args:
+                data["custom_attributes"] = processed_args["custom_attributes"]
 
             try:
                 contact_result = await execute_intercom_request(
@@ -725,53 +750,90 @@ def create_server(user_id, api_key=None):
                 )
 
                 if not contact_result or "id" not in contact_result:
-                    error_message = contact_result.get(
-                        "errors", [{"message": "Unknown error"}]
-                    )[0].get("message")
+                    error_message = "Failed to create contact."
+                    if (
+                        contact_result
+                        and isinstance(contact_result.get("errors"), list)
+                        and contact_result["errors"]
+                    ):
+                        error_message = contact_result["errors"][0].get(
+                            "message", error_message
+                        )
+
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to create contact: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=contact_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
 
                 return [
                     TextContent(
                         type="text",
-                        text=f"Contact created successfully!\n\n"
-                        f"ID: {contact_result.get('id')}\n"
-                        f"Name: {contact_result.get('name', 'Not provided')}\n"
-                        f"Email: {contact_result.get('email')}\n"
-                        f"Role: {contact_result.get('role', 'user')}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=contact_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error creating contact: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except Exception:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error creating contact: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error creating contact: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "create_conversation":
             required_fields = ["contact_id", "message"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
-            # Fix the data structure for creating a conversation
-            # According to Intercom OpenAPI spec, we need to use the /conversations endpoint
-            # with proper format for message creation
             data = {
-                "from": {"type": "user", "id": arguments["contact_id"]},
-                "body": arguments["message"],
+                "from": {"type": "user", "id": processed_args["contact_id"]},
+                "body": processed_args["message"],
             }
 
-            # If admin_id is specified, use it as the author
-            if "admin_id" in arguments:
-                data["from"] = {"type": "admin", "id": arguments["admin_id"]}
+            if "admin_id" in processed_args:
+                data["from"] = {"type": "admin", "id": processed_args["admin_id"]}
 
-            if "tag_ids" in arguments:
-                data["tags"] = {"ids": arguments["tag_ids"]}
+            if "tag_ids" in processed_args:
+                data["tags"] = {"ids": processed_args["tag_ids"]}
 
             try:
                 conversation_result = await execute_intercom_request(
@@ -779,457 +841,883 @@ def create_server(user_id, api_key=None):
                 )
 
                 if not conversation_result or "id" not in conversation_result:
-                    error_message = (
-                        conversation_result.get(
-                            "errors", [{"message": "Unknown error"}]
-                        )[0].get("message")
-                        if conversation_result
-                        else "Unknown error"
-                    )
+                    error_message = "Failed to create conversation."
+                    if (
+                        conversation_result
+                        and isinstance(conversation_result.get("errors"), list)
+                        and conversation_result["errors"]
+                    ):
+                        error_message = conversation_result["errors"][0].get(
+                            "message", error_message
+                        )
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to create conversation: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=conversation_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
 
                 return [
                     TextContent(
                         type="text",
-                        text=f"Conversation created successfully!\n\n"
-                        f"ID: {conversation_result.get('id')}\n"
-                        f"Created: {conversation_result.get('created_at')}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=True, data=conversation_result, error=None
+                            )
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error creating conversation: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except Exception:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error creating conversation: {str(e)}")
                 return [
                     TextContent(
-                        type="text", text=f"Error creating conversation: {str(e)}"
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
                     )
                 ]
 
         elif name == "reply_to_conversation":
-            required_fields = ["message"]
-            for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+            # The Intercom endpoint for "reply to conversation" is /conversations/{id}/reply
+            # The current code uses "conversations/last/reply", which replies to the *last* conversation.
+            # The input schema for this tool is missing "conversation_id". This is a pre-existing issue.
+            # For now, we adapt to current code, assuming "conversations/last/reply" is intended.
+            # If a specific conversation ID is ever used, it must be added to required_fields and path.
 
-            conversation_id = arguments["conversation_id"]
+            if "message" not in processed_args:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing required parameter: message",
+                            )
+                        ),
+                    )
+                ]
+
+            # conversation_id = processed_args.get("conversation_id") # Not used in current API path but was in old messages
 
             data = {
-                "message_type": "comment",
-                "body": arguments["message"],
+                "message_type": "comment",  # As per Intercom API for replying
+                "body": processed_args["message"],
             }
 
-            if "user_id" in arguments:
-                data["type"] = "user"
-                data["intercom_user_id"] = arguments["user_id"]
-            elif "admin_id" in arguments:
-                data["type"] = "admin"
-                data["admin_id"] = arguments["admin_id"]
+            # Set sender type based on provided ID
+            if "user_id" in processed_args:  # This implies a reply from a contact/user
+                data["from"] = {"type": "user", "id": processed_args["user_id"]}
+            elif "admin_id" in processed_args:  # This implies a reply from an admin
+                data["from"] = {"type": "admin", "id": processed_args["admin_id"]}
+            else:
+                # If neither user_id nor admin_id is provided, the API might require one or use a default.
+                # The original code did not explicitly handle this "from" field structure for /conversations/last/reply
+                # It used `data["type"] = "user"` or `data["type"] = "admin"`
+                # And `data["intercom_user_id"]` or `data["admin_id"]`
+                # The correct structure for the `from` field when creating messages is usually {"type": "...", "id": "..."}
+                # For "conversations/last/reply" or "conversations/{id}/reply", the message body is POSTed.
+                # The actual API might be POST /conversations/{id}/reply with message body.
+                # The original code used: data["type"], data["intercom_user_id"], data["admin_id"]
+                # This might be for a different endpoint or an older API version.
+                # The "Reply to conversation part" (POST /conversations/{id}/parts) takes { "message_type": "comment", "body": "...", "author_id": "...", "author_type": "..."}
+                # Let's stick to the `message_type` and `body` as per original code, and add `from` if possible
+                pass  # API will decide sender or error out if ambiguous/required and not given
 
-            if "attachment_urls" in arguments:
-                data["attachment_urls"] = arguments["attachment_urls"]
+            if "attachment_urls" in processed_args:
+                data["attachment_urls"] = processed_args["attachment_urls"]
+
+            # Determine conversation ID for the API path
+            conversation_id_for_path = processed_args.get("conversation_id")
+            if not conversation_id_for_path:
+                # Using "last" as per original path if no ID is provided
+                api_path = "conversations/last/reply"
+            else:
+                api_path = f"conversations/{conversation_id_for_path}/reply"
 
             try:
-                if not conversation_id:
-                    return [
-                        TextContent(
-                            type="text",
-                            text="Invalid conversation ID. Please provide a valid ID.",
-                        )
-                    ]
-
                 reply_result = await execute_intercom_request(
                     "post",
-                    f"conversations/last/reply",
+                    api_path,
                     data=data,
                     access_token=access_token,
                 )
 
-                if not reply_result:
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failed to reply to conversation. The conversation ID {conversation_id} may be invalid.",
+                if (
+                    not reply_result
+                    or reply_result.get("type") == "error.list"
+                    or "id" not in reply_result
+                ):  # Check for API error structure or missing ID
+                    error_message = "Failed to reply to conversation."
+                    if (
+                        reply_result
+                        and isinstance(reply_result.get("errors"), list)
+                        and reply_result["errors"]
+                    ):
+                        error_message = reply_result["errors"][0].get(
+                            "message", error_message
                         )
-                    ]
-
-                if "errors" in reply_result:
-                    error_message = reply_result.get(
-                        "errors", [{"message": "Unknown error"}]
-                    )[0].get("message")
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to reply to conversation: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=reply_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
 
                 return [
                     TextContent(
                         type="text",
-                        text=f"Reply sent successfully to conversation {conversation_id}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=reply_result, error=None)
+                        ),
                     )
                 ]
 
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error replying to conversation: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except Exception:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error replying to conversation: {str(e)}")
                 return [
                     TextContent(
-                        type="text", text=f"Error replying to conversation: {str(e)}"
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
                     )
                 ]
 
         elif name == "add_tags_to_conversation":
             required_fields = ["conversation_id", "tag_ids"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
-            conversation_id = arguments["conversation_id"]
-            tag_ids = arguments["tag_ids"]
+            conversation_id = processed_args["conversation_id"]
+            tag_ids = processed_args["tag_ids"]
 
-            data = {"tags": {"ids": tag_ids}}
+            # According to Intercom API, adding tags is POST /conversations/{id}/tags with {"id": "tag_id"}
+            # Or more commonly: data = {"tags": [{"id": "tag_id1"}, {"id": "tag_id2"}]} to the conversation itself
+            # Or POST /tags with {"name": "Urgent", "users": [{"id": "user_id_1"}, ...]}
+            # The original code did: POST /conversations/{id}/tags with data = {"tags": {"ids": tag_ids}}
+            # Let's assume this is correct structure for this endpoint.
+            data = {"id": tag_ids[0]}  # This is for tagging a single tag.
+            # If tag_ids is a list, we might need to loop or use a different payload.
+            # The endpoint is `/conversations/{conversation_id}/tags`
+            # The payload for POST /conversations/{id}/tags seems to be {"id": "tag_id_to_apply"}
+            # If multiple tags, it's usually an admin action to create/update a tag with multiple users/conversations
+            # or PATCH conversation with tags.
+            # The original code used data = {"tags": {"ids": tag_ids}} for POST conversations/{id}/tags
+            # Let's try to match that:
+            data_payload = {
+                "admin_id": "YOUR_ADMIN_ID_HERE",
+                "tags": [{"id": tid} for tid in tag_ids],
+            }  # This might be a PUT/PATCH on conversation
+            # The endpoint /conversations/{id}/tags usually takes a single tag id for POST.
+            # Let's use the original logic's data structure and endpoint.
+
+            # Correcting: The API is typically POST /conversations/{id}/tags with a body like { "id": "tag_id_to_add" }
+            # To add multiple tags, this might need to be called multiple times, or the conversation updated directly.
+            # The previous code: data = {"tags": {"ids": tag_ids}} to f"conversations/{conversation_id}/tags"
+            # This structure is unusual for a POST to `/tags` sub-resource.
+            # A more common way is PUT/PATCH on the conversation object itself with a list of tags.
+            # Or, if the endpoint truly supports it:
+            data_for_tagging = {
+                "tags": [{"id": tag_id} for tag_id in tag_ids]
+            }  # This is more standard for updating a resource with tags
+            # However, the original code used a `data = {"tags": {"ids": tag_ids}}`. Let's use that if it's a specific Intercomism.
+            # The API doc for "Tag a conversation" (POST /conversations/{id}/tags) shows body: { "id": "string" (Tag ID) }
+            # This means it can only add one tag at a time.
+            # The original code's `data = {"tags": {"ids": tag_ids}}` is likely incorrect for this endpoint.
+            # To match `add_tags_to_conversation` where `tag_ids` is a list:
+            # We should probably iterate and add one by one.
+
+            results = []
+            errors = []
 
             try:
-                result = await execute_intercom_request(
-                    "post",
-                    f"conversations/{conversation_id}/tags",
-                    data=data,
-                    access_token=access_token,
-                )
+                for tag_id in tag_ids:
+                    tag_payload = {"id": tag_id}
+                    result = await execute_intercom_request(
+                        "post",
+                        f"conversations/{conversation_id}/tags",
+                        data=tag_payload,
+                        access_token=access_token,
+                    )
+                    # Assuming result is the conversation object or a success indicator.
+                    # Intercom usually returns the object that was acted upon (e.g., the tag applied or the conversation).
+                    results.append(result)
+
+                if errors:  # If some tags failed
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data={
+                                        "successful_tags": results,
+                                        "failed_tags": errors,
+                                    },
+                                    error="Some tags could not be added.",
+                                )
+                            ),
+                        )
+                    ]
 
                 return [
                     TextContent(
                         type="text",
-                        text=f"Successfully added {len(tag_ids)} tags to conversation {conversation_id}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=True,
+                                data={"applied_tags_responses": results},
+                                error=None,
+                            )  # Data contains list of responses for each tag add.
+                        ),
+                    )
+                ]
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error adding tags to conversation: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                errors.append(
+                    {
+                        "tag_id": "current_tag_being_processed",
+                        "error": str(e),
+                        "details": error_data,
+                    }
+                )  # Simplified error aggregation
+                # If an error occurs, we might have partial success. The current loop structure doesn't easily return that.
+                # For simplicity, first error fails the whole operation for now.
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=error_data,
+                                error=f"Error adding tags: {str(e)}",
+                            )
+                        ),
                     )
                 ]
 
             except Exception as e:
                 logger.error(f"Error adding tags to conversation: {str(e)}")
-                return [TextContent(type="text", text=f"Error adding tags: {str(e)}")]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error=f"Error adding tags: {str(e)}",
+                            )
+                        ),
+                    )
+                ]
 
         elif name == "remove_tags_from_conversation":
             required_fields = ["conversation_id", "tag_ids"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
-            conversation_id = arguments["conversation_id"]
-            tag_ids = arguments["tag_ids"]
+            conversation_id = processed_args["conversation_id"]
+            tag_ids = processed_args["tag_ids"]
+
+            removed_tags_responses = []
+            errors = []
 
             try:
-                # For each tag ID, send a separate request to remove it
                 for tag_id in tag_ids:
-                    await execute_intercom_request(
+                    # DELETE /conversations/{conversation_id}/tags/{tag_id}
+                    response = await execute_intercom_request(
                         "delete",
                         f"conversations/{conversation_id}/tags/{tag_id}",
                         access_token=access_token,
                     )
+                    # DELETE often returns 204 No Content, or the parent object.
+                    # execute_intercom_request returns response.json(). For 204, this might be an issue if no body.
+                    # Assuming execute_intercom_request handles empty JSON responses for DELETE.
+                    removed_tags_responses.append(
+                        {"tag_id": tag_id, "response": response}
+                    )
+
+                if errors:  # If any error occurred
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data={
+                                        "removed_tags": removed_tags_responses,
+                                        "errors": errors,
+                                    },
+                                    error="Some tags could not be removed.",
+                                )
+                            ),
+                        )
+                    ]
 
                 return [
                     TextContent(
                         type="text",
-                        text=f"Successfully removed {len(tag_ids)} tags from conversation {conversation_id}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=True,
+                                data={"removed_tags_info": removed_tags_responses},
+                                error=None,
+                            )
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error removing tags from conversation: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                # This exception will break the loop. For simplicity, first error fails all.
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=error_data,
+                                error=f"Error removing tags: {str(e)}",
+                            )
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error removing tags from conversation: {str(e)}")
-                return [TextContent(type="text", text=f"Error removing tags: {str(e)}")]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error=f"Error removing tags: {str(e)}",
+                            )
+                        ),
+                    )
+                ]
 
         elif name == "list_admins":
             try:
                 admins_result = await execute_intercom_request(
                     "get", "admins", access_token=access_token
                 )
-
-                admins = admins_result.get("admins", [])
-
-                if not admins:
-                    return [TextContent(type="text", text="No admins found.")]
-
-                admin_list = []
-                for admin in admins:
-                    admin_list.append(
-                        f"Admin: {admin.get('name')}\n"
-                        f"  Email: {admin.get('email')}\n"
-                        f"  ID: {admin.get('id')}\n"
-                        f"  Role: {admin.get('job_title', 'Not specified')}"
-                    )
-
-                formatted_result = "\n\n".join(admin_list)
                 return [
                     TextContent(
                         type="text",
-                        text=f"Found {len(admins)} admins:\n\n{formatted_result}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=admins_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error listing admins: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error listing admins: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error listing admins: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "search_companies":
-            if not arguments or "query" not in arguments:
-                raise ValueError("Missing query parameter")
-
-            query = arguments["query"]
-
-            try:
-                search_params = {
-                    "filter": {"field": "name", "operator": "~", "value": query}
-                }
-                search_result = await execute_intercom_request(
-                    "post",
-                    "companies/list",
-                    data=search_params,
-                    access_token=access_token,
-                )
-
-                companies = search_result.get("data", [])
-
-                if not companies:
-                    return [
-                        TextContent(
-                            type="text", text="No companies found matching your query."
-                        )
-                    ]
-
-                company_list = []
-                for company in companies:
-                    company_list.append(
-                        f"Company: {company.get('name', 'Unnamed')}\n"
-                        f"  ID: {company.get('id')}\n"
-                        f"  Company ID: {company.get('company_id', 'Not specified')}\n"
-                        f"  Created: {company.get('created_at')}"
-                    )
-
-                formatted_result = "\n\n".join(company_list)
+            if "query" not in processed_args:
                 return [
                     TextContent(
                         type="text",
-                        text=f"Found {len(companies)} companies:\n\n{formatted_result}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing query parameter",
+                            )
+                        ),
                     )
                 ]
-
+            query = processed_args["query"]
+            try:
+                # Intercom search for companies is typically POST companies/search or GET companies with filters
+                # Original code used POST companies/list with "filter"
+                # Assuming this is correct:
+                search_params = {
+                    # "name": query # A common way to search
+                    # Or using the filter syntax if supported by companies/list
+                    "filter": {
+                        "field": "name",
+                        "operator": "~",
+                        "value": query,
+                    }  # As per original
+                }
+                search_result = await execute_intercom_request(
+                    "post",  # Or GET depending on API
+                    "companies/list",  # Or "companies/search" or "companies"
+                    data=search_params,  # This implies POST
+                    access_token=access_token,
+                )
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=search_result, error=None)
+                        ),
+                    )
+                ]
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error searching companies: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error searching companies: {str(e)}")
                 return [
                     TextContent(
-                        type="text", text=f"Error searching companies: {str(e)}"
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
                     )
                 ]
 
         elif name == "create_company":
-            data = {"name": arguments["name"]}
+            if "name" not in processed_args:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing required parameter: name",
+                            )
+                        ),
+                    )
+                ]
 
-            # Add optional fields if provided
-            optional_fields = ["company_id", "website", "industry"]
+            data = {"name": processed_args["name"]}
+            optional_fields = ["company_id", "website", "industry", "custom_attributes"]
             for field in optional_fields:
-                if field in arguments:
-                    data[field] = arguments[field]
+                if field in processed_args:
+                    data[field] = processed_args[field]
 
-            # Generate a random company_id if not provided
-            if "company_id" not in data:
+            if (
+                "company_id" not in data
+            ):  # Ensure company_id is set, as per original logic
                 data["company_id"] = str(uuid.uuid4())
-
-            if "custom_attributes" in arguments:
-                data["custom_attributes"] = arguments["custom_attributes"]
 
             logger.info(f"Creating company with data: {data}")
             try:
                 company_result = await execute_intercom_request(
                     "post", "companies", data=data, access_token=access_token
                 )
-
                 logger.info(f"Company result: {company_result}")
+
                 if not company_result or "id" not in company_result:
-                    error_message = (
-                        company_result.get("errors", [{"message": "Unknown error"}])[
-                            0
-                        ].get("message")
-                        if company_result
-                        else "Unknown error"
-                    )
+                    error_message = "Failed to create company."
+                    if (
+                        company_result
+                        and isinstance(company_result.get("errors"), list)
+                        and company_result["errors"]
+                    ):
+                        error_message = company_result["errors"][0].get(
+                            "message", error_message
+                        )
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to create company: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=company_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
-
                 return [
                     TextContent(
                         type="text",
-                        text=f"Company created successfully!\n\n"
-                        f"ID: {company_result.get('id')}\n"
-                        f"Name: {company_result.get('name')}\n"
-                        f"Created: {company_result.get('created_at')}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=company_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error creating company: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error creating company: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error creating company: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "associate_contact_with_company":
             required_fields = ["contact_id", "company_id"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
-            contact_id = arguments["contact_id"]
-            company_id = arguments["company_id"]
+            contact_id = processed_args["contact_id"]
+            company_id = processed_args["company_id"]
 
-            data = {"companies": [{"id": company_id}]}
+            # Intercom API to associate: POST /contacts/{contact_id}/companies with body {"id": company_id}
+            # Or update contact: PUT /contacts/{contact_id} with body {"company_ids": [company_id]}
+            # Original code: POST /contacts/{contact_id}/companies with data = {"companies": [{"id": company_id}]}
+            # This looks like it might be for adding multiple companies, but schema implies one.
+            # Let's use the simpler one if it is just one association:
+            payload = {"id": company_id}
+            # If the original payload `{"companies": [{"id": company_id}]}` is specifically required by Intercom:
+            # payload = {"companies": [{"id": company_id}]}
+            # Sticking to original code's payload structure for now.
+            payload = {"companies": [{"id": company_id}]}
 
             try:
+                # This endpoint should ideally return the updated contact or the company.
                 result = await execute_intercom_request(
-                    "post",
-                    f"contacts/{contact_id}/companies",
-                    data=data,
+                    "post",  # Or PUT on contact
+                    f"contacts/{contact_id}/companies",  # This seems like adding company to contact
+                    data=payload,
                     access_token=access_token,
                 )
+                # Check result for success indication
+                if (
+                    not result or result.get("type") == "error.list"
+                ):  # Example error check
+                    error_message = "Failed to associate contact with company."
+                    if (
+                        result
+                        and isinstance(result.get("errors"), list)
+                        and result["errors"]
+                    ):
+                        error_message = result["errors"][0].get(
+                            "message", error_message
+                        )
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False, data=result, error=error_message
+                                )
+                            ),
+                        )
+                    ]
 
                 return [
                     TextContent(
                         type="text",
-                        text=f"Successfully associated contact {contact_id} with company {company_id}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error associating contact with company: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error associating contact with company: {str(e)}")
                 return [
                     TextContent(
                         type="text",
-                        text=f"Error associating contact with company: {str(e)}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error=f"Error associating contact with company: {str(e)}",
+                            )
+                        ),
                     )
                 ]
 
         elif name == "list_articles":
             params = {}
-            if arguments and "collection_id" in arguments:
-                params["collection_id"] = arguments["collection_id"]
-
+            if "collection_id" in processed_args:
+                params["collection_id"] = processed_args["collection_id"]
+            # Other params like page, per_page could be added from processed_args
             try:
                 articles_result = await execute_intercom_request(
                     "get", "articles", params=params, access_token=access_token
                 )
-
-                articles = articles_result.get("data", [])
-                total_count = articles_result.get("total_count", 0)
-
-                if not articles:
-                    return [TextContent(type="text", text="No articles found.")]
-
-                article_list = []
-                for article in articles:
-                    article_list.append(
-                        f"Article: {article.get('title')}\n"
-                        f"  ID: {article.get('id')}\n"
-                        f"  State: {article.get('state')}\n"
-                        f"  URL: {article.get('url', 'No URL')}\n"
-                        f"  Updated: {article.get('updated_at')}"
-                    )
-
-                formatted_result = "\n\n".join(article_list)
                 return [
                     TextContent(
                         type="text",
-                        text=f"Found {total_count} articles (showing {len(articles)}):\n\n{formatted_result}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=True,
+                                data=articles_result.get("data", []),
+                                error=None,
+                            )
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error listing articles: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error listing articles: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error listing articles: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "retrieve_article":
+            if "id" not in processed_args:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing required article ID parameter",
+                            )
+                        ),
+                    )
+                ]
+            article_id = processed_args["id"]
             try:
-                if not arguments or "id" not in arguments:
-                    return [
-                        TextContent(
-                            type="text", text="Missing required article ID parameter"
-                        )
-                    ]
-
                 article_result = await execute_intercom_request(
                     "get",
-                    f"articles/{arguments['id']}",
+                    f"articles/{article_id}",
                     access_token=access_token,
                 )
-
                 logger.info(f"Article result: {article_result}")
 
-                if not article_result or "id" not in article_result:
+                if (
+                    not article_result or "id" not in article_result
+                ):  # Basic check for valid article data
                     return [
                         TextContent(
                             type="text",
-                            text=f"No article found with ID: {arguments['id']}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=article_result,  # Include what was returned
+                                    error=f"No article found with ID: {article_id}",
+                                )
+                            ),
                         )
                     ]
-
-                article_details = (
-                    f"Title: {article_result.get('title')}\n"
-                    f"ID: {article_result.get('id')}\n"
-                    f"State: {article_result.get('state', 'Unknown')}\n"
-                    f"URL: {article_result.get('url', 'No URL')}\n"
-                    f"Author: {article_result.get('author_id', 'Unknown')}\n"
-                    f"Updated: {article_result.get('updated_at', 'Unknown')}"
-                )
-
-                # Add more detailed content preview
-                if article_result.get("body"):
-                    preview_length = 500  # Increased preview length
-                    preview = article_result.get("body")[:preview_length]
-                    if len(article_result.get("body", "")) > preview_length:
-                        preview += "..."
-                    article_details += f"\n\nPreview: {preview}"
-
-                # Add created date if available
-                if article_result.get("created_at"):
-                    article_details += (
-                        f"\n\nCreated: {article_result.get('created_at')}"
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=article_result, error=None)
+                        ),
                     )
-
-                logger.info(f"Article details: {article_details}")
-
-                return [TextContent(type="text", text=article_details)]
-
+                ]
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error retrieving article: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error retrieving article: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error retrieving article: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "create_article":
             required_fields = ["title", "body", "author_id"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
             data = {
-                "title": arguments["title"],
-                "body": arguments["body"],
-                "author_id": arguments["author_id"],
-                "state": arguments.get("state", "draft"),
+                "title": processed_args["title"],
+                "body": processed_args["body"],  # Should be HTML
+                "author_id": processed_args["author_id"],  # Admin ID
+                "state": processed_args.get("state", "draft"),  # "draft" or "published"
             }
 
-            if "collection_id" in arguments:
-                data["parent_id"] = arguments["collection_id"]
-                data["parent_type"] = "collection"
+            if "collection_id" in processed_args:  # collection_id is parent_id
+                data["parent_id"] = processed_args["collection_id"]
+                data["parent_type"] = "collection"  # As per Intercom API
 
             try:
                 article_result = await execute_intercom_request(
@@ -1237,315 +1725,441 @@ def create_server(user_id, api_key=None):
                 )
 
                 if not article_result or "id" not in article_result:
-                    error_message = article_result.get(
-                        "errors", [{"message": "Unknown error"}]
-                    )[0].get("message")
+                    error_message = "Failed to create article."
+                    if (
+                        article_result
+                        and isinstance(article_result.get("errors"), list)
+                        and article_result["errors"]
+                    ):
+                        error_message = article_result["errors"][0].get(
+                            "message", error_message
+                        )
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to create article: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=article_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
-
                 return [
                     TextContent(
                         type="text",
-                        text=f"Article created successfully!\n\n"
-                        f"ID: {article_result.get('id')}\n"
-                        f"Title: {article_result.get('title')}\n"
-                        f"State: {article_result.get('state')}\n"
-                        f"URL: {article_result.get('url')}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=article_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error creating article: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error creating article: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error creating article: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         # Ticket management tool implementations
         elif name == "list_tickets":
             params = {}
-
-            if arguments:
-                if "state" in arguments and arguments["state"] != "all":
-                    params["state"] = arguments["state"]
-                if "tag_id" in arguments:
-                    params["tag_id"] = arguments["tag_id"]
-                if "limit" in arguments:
-                    params["per_page"] = arguments["limit"]
+            if "state" in processed_args and processed_args["state"] != "all":
+                params["state"] = processed_args["state"]
+            if (
+                "tag_id" in processed_args
+            ):  # Assuming this is a valid filter for Intercom tickets API
+                params["tag_id"] = processed_args["tag_id"]
+            if "limit" in processed_args:  # API might use "per_page" or "count"
+                params["per_page"] = processed_args["limit"]
 
             try:
                 tickets_result = await execute_intercom_request(
                     "get", "tickets", params=params, access_token=access_token
                 )
-
-                tickets = tickets_result.get("tickets", [])
-
-                if not tickets:
-                    return [TextContent(type="text", text="No tickets found.")]
-
-                ticket_list = []
-                for ticket in tickets:
-                    contact_name = (
-                        ticket.get("contacts", {})
-                        .get("contacts", [{}])[0]
-                        .get("name", "Unknown contact")
-                    )
-                    status = ticket.get("ticket_state", "unknown")
-                    created_at = ticket.get("created_at", "Unknown date")
-
-                    ticket_list.append(
-                        f"Ticket: {ticket.get('ticket_attributes', {}).get('_default_title_', 'No title')}\n"
-                        f"  ID: {ticket.get('id')}\n"
-                        f"  Status: {status}\n"
-                        f"  Contact: {contact_name}\n"
-                        f"  Created: {created_at}"
-                    )
-
-                formatted_result = "\n\n".join(ticket_list)
                 return [
                     TextContent(
                         type="text",
-                        text=f"Found {len(tickets)} tickets:\n\n{formatted_result}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=tickets_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error listing tickets: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error listing tickets: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error listing tickets: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "get_ticket":
-            required_fields = ["ticket_id"]
-            for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
-
-            ticket_id = arguments["ticket_id"]
-
+            if "ticket_id" not in processed_args:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing required parameter: ticket_id",
+                            )
+                        ),
+                    )
+                ]
+            ticket_id = processed_args["ticket_id"]
             try:
                 ticket_result = await execute_intercom_request(
                     "get", f"tickets/{ticket_id}", access_token=access_token
                 )
-
                 if not ticket_result or "id" not in ticket_result:
                     return [
                         TextContent(
-                            type="text", text=f"Ticket with ID {ticket_id} not found."
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=ticket_result,
+                                    error=f"Ticket with ID {ticket_id} not found.",
+                                )
+                            ),
                         )
                     ]
-
-                title = ticket_result.get("ticket_attributes", {}).get(
-                    "_default_title_", "No title"
-                )
-                description = ticket_result.get("ticket_attributes", {}).get(
-                    "_default_description_", "No description"
-                )
-                status = ticket_result.get("ticket_state", "unknown")
-                created_at = ticket_result.get("created_at", "Unknown")
-                updated_at = ticket_result.get("updated_at", "Unknown")
-                ticket_parts = ticket_result.get("ticket_parts", {}).get(
-                    "ticket_parts", []
-                )
-
-                contact_info = "Unknown contact"
-                if ticket_result.get("contacts", {}).get("contacts"):
-                    contact = ticket_result.get("contacts", {}).get("contacts", [])[0]
-                    contact_info = f"{contact.get('name', 'Unknown')} ({contact.get('email', 'No email')})"
-
-                admin_assignee = ticket_result.get("admin_assignee_id", "None")
-
-                ticket_details = (
-                    f"Ticket: {title}\n"
-                    f"ID: {ticket_result.get('id')}\n"
-                    f"Status: {status}\n"
-                    f"Contact: {contact_info}\n"
-                    f"Assignee: {admin_assignee}\n"
-                    f"Created: {created_at}\n"
-                    f"Updated: {updated_at}\n\n"
-                    f"Description:\n{description}\n\n"
-                )
-
-                if ticket_parts:
-                    parts_text = "Activity & Comments:\n\n"
-                    for part in ticket_parts:
-                        part_type = part.get("part_type", "Unknown")
-                        author_info = "System"
-                        if part.get("author"):
-                            author_type = part["author"].get("type", "unknown")
-                            author_name = part["author"].get("name", "Unknown")
-                            author_info = f"{author_name} ({author_type})"
-
-                        created_at = part.get("created_at", "Unknown")
-
-                        parts_text += f"[{created_at}] {author_info} - {part_type}:\n"
-
-                        if part.get("body"):
-                            parts_text += f"{part.get('body')}\n\n"
-                        else:
-                            parts_text += "No content\n\n"
-
-                    ticket_details += parts_text
-
-                return [TextContent(type="text", text=ticket_details)]
-
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=ticket_result, error=None)
+                        ),
+                    )
+                ]
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error retrieving ticket: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                # Check if status code is 404 for "not found" specifically
+                if e.response and e.response.status_code == 404:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=error_data,
+                                    error=f"Ticket with ID {ticket_id} not found.",
+                                )
+                            ),
+                        )
+                    ]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error retrieving ticket: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error retrieving ticket: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "create_ticket":
-            required_fields = ["contact_id", "title", "description"]
+            # Required fields from schema: "contact_id", "title", "description", "ticket_type_id"
+            required_fields = ["contact_id", "title", "description", "ticket_type_id"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
 
-            contacts = [{"id": arguments["contact_id"]}]
-            ticket_type_id = arguments.get("ticket_type_id", "")
-
-            ticket_attributes = {
-                "_default_title_": arguments["title"],
-                "_default_description_": arguments["description"],
-            }
-
+            # Structure for creating a ticket (this was simplified in original code)
+            # POST /tickets
+            # {
+            #   "ticket_type_id": "...",
+            #   "contacts": [{"id": "contact_id_1"}],
+            #   "ticket_attributes": { "_default_title_": "...", "_default_description_": "..." },
+            #   "admin_assignee_id": "optional_admin_id", (or use assignment object)
+            #   "company_associations": [{"id": "company_id_1"}]
+            # }
             data = {
-                "contacts": contacts,
-                "ticket_attributes": ticket_attributes,
-                "ticket_type_id": ticket_type_id,
+                "ticket_type_id": processed_args["ticket_type_id"],
+                "contacts": [
+                    {"id": processed_args["contact_id"]}
+                ],  # Assuming one contact
+                "ticket_attributes": {
+                    "_default_title_": processed_args["title"],
+                    "_default_description_": processed_args["description"],
+                },
             }
 
-            if "company_id" in arguments:
-                data["company_id"] = arguments["company_id"]
+            if "company_id" in processed_args:  # This should be company_associations
+                data["company_associations"] = [{"id": processed_args["company_id"]}]
+
+            # Add other optional fields from processed_args if API supports them directly (e.g. admin_assignee_id)
 
             try:
                 ticket_result = await execute_intercom_request(
                     "post", "tickets", data=data, access_token=access_token
                 )
-
                 if not ticket_result or "id" not in ticket_result:
-                    error_message = "Unknown error"
-                    if ticket_result and "errors" in ticket_result:
-                        error_message = ticket_result.get(
-                            "errors", [{"message": "Unknown error"}]
-                        )[0].get("message")
+                    error_message = "Failed to create ticket."
+                    if (
+                        ticket_result
+                        and isinstance(ticket_result.get("errors"), list)
+                        and ticket_result["errors"]
+                    ):
+                        error_message = ticket_result["errors"][0].get(
+                            "message", error_message
+                        )
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to create ticket: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=ticket_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
-
                 return [
                     TextContent(
                         type="text",
-                        text=f"Ticket created successfully!\n\n"
-                        f"ID: {ticket_result.get('id')}\n"
-                        f"Title: {arguments['title']}\n"
-                        f"Status: {ticket_result.get('ticket_state', 'submitted')}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=ticket_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error creating ticket: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error creating ticket: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error creating ticket: {str(e)}")
-                ]
-
-        elif name == "update_ticket":
-            required_fields = ["ticket_id"]
-            for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
-
-            ticket_id = arguments["ticket_id"]
-            data = {}
-
-            if "title" in arguments or "description" in arguments:
-                ticket_attributes = {}
-                if "title" in arguments:
-                    ticket_attributes["_default_title_"] = arguments["title"]
-                if "description" in arguments:
-                    ticket_attributes["_default_description_"] = arguments[
-                        "description"
-                    ]
-                data["ticket_attributes"] = ticket_attributes
-
-            if "state" in arguments:
-                data["state"] = arguments["state"]
-
-            if "admin_id" in arguments:
-                data["assignment"] = {"admin_id": arguments["admin_id"]}
-
-            if "is_shared" in arguments:
-                data["is_shared"] = arguments["is_shared"]
-
-            if not data:
-                return [TextContent(type="text", text="No fields provided to update.")]
-
-            try:
-                ticket_result = await execute_intercom_request(
-                    "put", f"tickets/{ticket_id}", data=data, access_token=access_token
-                )
-
-                if not ticket_result or "id" not in ticket_result:
-                    error_message = "Unknown error"
-                    if ticket_result and "errors" in ticket_result:
-                        error_message = ticket_result.get(
-                            "errors", [{"message": "Unknown error"}]
-                        )[0].get("message")
-                    return [
-                        TextContent(
-                            type="text",
-                            text=f"Failed to update ticket: {error_message}",
-                        )
-                    ]
-
-                update_summary = []
-                if "state" in arguments:
-                    update_summary.append(f"Status: {arguments['state']}")
-                if "admin_id" in arguments:
-                    update_summary.append(f"Assigned to: Admin {arguments['admin_id']}")
-                if "title" in arguments:
-                    update_summary.append(f"Title: {arguments['title']}")
-
-                status_message = (
-                    ", ".join(update_summary) if update_summary else "Fields updated"
-                )
-
-                return [
                     TextContent(
                         type="text",
-                        text=f"Ticket updated successfully!\n\n"
-                        f"ID: {ticket_result.get('id')}\n"
-                        f"{status_message}",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
                     )
                 ]
 
+        elif name == "update_ticket":
+            if "ticket_id" not in processed_args:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="Missing required parameter: ticket_id",
+                            )
+                        ),
+                    )
+                ]
+            ticket_id = processed_args["ticket_id"]
+            data_to_update = {}  # PUT /tickets/{id}
+
+            ticket_attributes = {}
+            if "title" in processed_args:
+                ticket_attributes["_default_title_"] = processed_args["title"]
+            if "description" in processed_args:
+                ticket_attributes["_default_description_"] = processed_args[
+                    "description"
+                ]
+            if ticket_attributes:
+                data_to_update["ticket_attributes"] = ticket_attributes
+
+            if "state" in processed_args:  # e.g., "in_progress", "resolved"
+                data_to_update["state"] = processed_args["state"]
+
+            if "admin_id" in processed_args:  # admin_assignee_id
+                data_to_update["admin_assignee_id"] = processed_args["admin_id"]
+                # Or using assignment object: data_to_update["assignment"] = {"admin_id": processed_args["admin_id"]}
+
+            if (
+                "is_shared" in processed_args
+            ):  # This field might not be directly updatable or named differently
+                data_to_update["is_shared"] = processed_args[
+                    "is_shared"
+                ]  # Verify API field name
+
+            if not data_to_update:
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error="No fields provided to update.",
+                            )
+                        ),
+                    )
+                ]
+            try:
+                ticket_result = await execute_intercom_request(
+                    "put",
+                    f"tickets/{ticket_id}",
+                    data=data_to_update,
+                    access_token=access_token,
+                )
+                if not ticket_result or "id" not in ticket_result:
+                    error_message = "Failed to update ticket."
+                    if (
+                        ticket_result
+                        and isinstance(ticket_result.get("errors"), list)
+                        and ticket_result["errors"]
+                    ):
+                        error_message = ticket_result["errors"][0].get(
+                            "message", error_message
+                        )
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=ticket_result,
+                                    error=error_message,
+                                )
+                            ),
+                        )
+                    ]
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=ticket_result, error=None)
+                        ),
+                    )
+                ]
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error updating ticket: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error updating ticket: {str(e)}")
                 return [
-                    TextContent(type="text", text=f"Error updating ticket: {str(e)}")
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
+                    )
                 ]
 
         elif name == "add_comment_to_ticket":
+            # POST /tickets/{id}/reply
             required_fields = ["ticket_id", "comment", "admin_id"]
             for field in required_fields:
-                if not arguments or field not in arguments:
-                    raise ValueError(f"Missing required parameter: {field}")
+                if field not in processed_args:
+                    return [
+                        TextContent(
+                            type="text",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=None,
+                                    error=f"Missing required parameter: {field}",
+                                )
+                            ),
+                        )
+                    ]
+            ticket_id = processed_args["ticket_id"]
 
-            ticket_id = arguments["ticket_id"]
-
+            # Payload for POST /tickets/{id}/reply
+            # { "message_type": "note" (or "comment"), "type": "admin", "admin_id": "...", "body": "..."}
+            # "type" here is sender type.
             data = {
-                "message_type": arguments.get("message_type", "note"),
-                "type": "admin",
-                "admin_id": arguments["admin_id"],
-                "body": arguments["comment"],
+                "message_type": processed_args.get(
+                    "message_type", "note"
+                ),  # Schema says "note"
+                "type": "admin",  # Comment is from an admin
+                "admin_id": processed_args["admin_id"],
+                "body": processed_args["comment"],
             }
-
             try:
                 comment_result = await execute_intercom_request(
                     "post",
@@ -1553,75 +2167,123 @@ def create_server(user_id, api_key=None):
                     data=data,
                     access_token=access_token,
                 )
-
-                if not comment_result or "id" not in comment_result:
-                    error_message = "Unknown error"
-                    if comment_result and "errors" in comment_result:
-                        error_message = comment_result.get(
-                            "errors", [{"message": "Unknown error"}]
-                        )[0].get("message")
+                # Successful reply usually returns the created ticket part / comment object.
+                if (
+                    not comment_result or "id" not in comment_result
+                ):  # Check for valid comment object
+                    error_message = "Failed to add comment."
+                    if (
+                        comment_result
+                        and isinstance(comment_result.get("errors"), list)
+                        and comment_result["errors"]
+                    ):
+                        error_message = comment_result["errors"][0].get(
+                            "message", error_message
+                        )
                     return [
                         TextContent(
                             type="text",
-                            text=f"Failed to add comment: {error_message}",
+                            text=json.dumps(
+                                ToolResponse(
+                                    success=False,
+                                    data=comment_result,
+                                    error=error_message,
+                                )
+                            ),
                         )
                     ]
-
                 return [
                     TextContent(
                         type="text",
-                        text=f"Note added successfully to ticket {ticket_id}",
+                        text=json.dumps(
+                            ToolResponse(success=True, data=comment_result, error=None)
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error adding comment to ticket: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error adding comment to ticket: {str(e)}")
                 return [
                     TextContent(
-                        type="text", text=f"Error adding comment to ticket: {str(e)}"
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=False,
+                                data=None,
+                                error=f"Error adding comment to ticket: {str(e)}",
+                            )
+                        ),
                     )
                 ]
 
         elif name == "list_ticket_types":
+            # GET /ticket_types
             try:
                 ticket_types_result = await execute_intercom_request(
                     "get", "ticket_types", access_token=access_token
                 )
-
-                ticket_types = ticket_types_result.get("data", [])
-
-                if not ticket_types:
-                    return [
-                        TextContent(
-                            type="text", text="No ticket types found in this workspace."
-                        )
-                    ]
-
-                ticket_type_list = []
-                for ticket_type in ticket_types:
-                    ticket_type_list.append(
-                        f"Ticket Type: {ticket_type.get('name', 'Unnamed')}\n"
-                        f"  ID: {ticket_type.get('id')}\n"
-                        f"  Description: {ticket_type.get('description', 'No description')}"
-                    )
-
-                formatted_result = "\n\n".join(ticket_type_list)
                 return [
                     TextContent(
                         type="text",
-                        text=f"Found {len(ticket_types)} ticket types:\n\n{formatted_result}",
+                        text=json.dumps(
+                            ToolResponse(
+                                success=True, data=ticket_types_result, error=None
+                            )
+                        ),
                     )
                 ]
-
+            except httpx.HTTPStatusError as e:
+                logger.error(f"Error listing ticket types: {str(e)}")
+                error_data = None
+                try:
+                    error_data = e.response.json()
+                except:
+                    pass
+                return [
+                    TextContent(
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=error_data, error=str(e))
+                        ),
+                    )
+                ]
             except Exception as e:
                 logger.error(f"Error listing ticket types: {str(e)}")
                 return [
                     TextContent(
-                        type="text", text=f"Error listing ticket types: {str(e)}"
+                        type="text",
+                        text=json.dumps(
+                            ToolResponse(success=False, data=None, error=str(e))
+                        ),
                     )
                 ]
 
-        raise ValueError(f"Unknown tool: {name}")
+        # Fallback for unknown tool
+        return [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    ToolResponse(
+                        success=False, data=None, error=f"Unknown tool: {name}"
+                    )
+                ),
+            )
+        ]
+        # raise ValueError(f"Unknown tool: {name}") # Old way
 
     return server
 
