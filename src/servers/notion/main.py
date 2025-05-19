@@ -1,9 +1,8 @@
+import json
+import logging
 import os
 import sys
-import logging
-import json
 from pathlib import Path
-from typing import Optional
 
 # Add both project root and src directory to Python path
 project_root = os.path.abspath(
@@ -15,10 +14,12 @@ sys.path.insert(0, os.path.join(project_root, "src"))
 import mcp.types as types
 from mcp.server import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
-
 from notion_client import AsyncClient
+from notion_to_md import NotionToMarkdownAsync
+
 from src.auth.factory import create_auth_client
 from src.utils.notion.util import authenticate_and_save_credentials
+from src.utils.utils import ToolResponse
 
 SERVICE_NAME = Path(__file__).parent.name
 SCOPES = ["all"]  # Notion doesn't use granular OAuth scopes like Google
@@ -141,6 +142,15 @@ def create_server(user_id, api_key=None):
                 },
             ),
             types.Tool(
+                name="get_page_with_content",
+                description="Retrieve a page by ID and return the content in markdown format",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"page_id": {"type": "string"}},
+                    "required": ["page_id"],
+                },
+            ),
+            types.Tool(
                 name="create_page",
                 description="Create a new page in a database",
                 inputSchema={
@@ -212,6 +222,17 @@ def create_server(user_id, api_key=None):
                 )
             elif name == "get_page":
                 result = await notion.pages.retrieve(page_id=arguments["page_id"])
+            elif name == "get_page_with_content":
+                result = await notion.pages.retrieve(page_id=arguments["page_id"])
+
+                n2m = NotionToMarkdownAsync(notion)
+                # Export a page as a markdown blocks
+                md_blocks = await n2m.page_to_markdown(arguments["page_id"])
+
+                # Convert markdown blocks to string
+                body = n2m.to_markdown_string(md_blocks).get("parent")
+                result["body"] = body
+
             elif name == "create_page":
                 result = await notion.pages.create(
                     parent={"database_id": arguments["database_id"]},
@@ -228,11 +249,25 @@ def create_server(user_id, api_key=None):
             else:
                 raise ValueError(f"Unknown tool: {name}")
 
-            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(
+                        ToolResponse(success=True, data=result, error=None), indent=2
+                    ),
+                )
+            ]
 
         except Exception as e:
             logger.error(f"Error calling Notion API: {e}")
-            return [types.TextContent(type="text", text=str(e))]
+            return [
+                types.TextContent(
+                    type="text",
+                    text=json.dumps(
+                        ToolResponse(success=False, data=None, error=str(e)), indent=2
+                    ),
+                )
+            ]
 
     return server
 
