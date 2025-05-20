@@ -37,6 +37,11 @@ def create_auth_client(
 
         return PlivoAuthClient()
 
+    elif environment == "plivo":
+        from .clients.PlivoAuthClient import PlivoAuthClient
+
+        return PlivoAuthClient()
+
     # Default to local file auth client
     from .clients.LocalAuthClient import LocalAuthClient
 
